@@ -164,7 +164,8 @@ private extension DetailView {
                             store.send(.delegate(.pushPreviews(
                                 gallery: store.gallery,
                                 previewConfig: store.previewConfig,
-                                language: store.galleryDetail?.language
+                                language: store.galleryDetail?.language,
+                                previewURLs: store.galleryPreviewURLs
                             )))
                         },
                         navigateReadingAction: {

@@ -113,11 +113,14 @@ extension DownloadCoordinator {
             transfer = try await performRequest()
         }
 
-        if let error = detectResponseError(
+        let responseError = detectResponseError(
             fileURL: transfer.fileURL,
             response: transfer.response,
             requestURL: request.url
-        ) {
+        )
+        let httpResponse = transfer.response as? HTTPURLResponse
+        let isHTTPSuccess = httpResponse.map({ (200..<300).contains($0.statusCode) }) == true
+        if let error = responseError ?? (isHTTPSuccess ? nil : .networkingFailed) {
             discardRejectedResponseFile(at: transfer.fileURL)
             if let taskIdentifier = transfer.taskIdentifier {
                 await backgroundTaskStore.remove(taskIdentifier: taskIdentifier)
@@ -137,18 +140,14 @@ extension DownloadCoordinator {
         // across attempts. The `defer` covers the throwing exits too, which is what lets a transfer
         // cancelled by the expiry's pause sweep still report how long it starved.
         //
-        // The attempt runs as its own task because the coordinator otherwise holds NOTHING that can
-        // stop a transfer: the URLSession task lives inside the nonisolated downloader and is
-        // reached only through Swift task cancellation, so the heartbeat's starvation sweep needs a
-        // handle of its own to abandon one (G-15-2I). The cancellation handler around the await is
-        // what keeps the CALLER's cancellation — a pause, the expiry sweep, a group cancel —
-        // reaching the transfer exactly as it did before.
+        // The downloader owns the URLSession task. Both the idle watchdog and the heartbeat
+        // stop it through this attempt's cancellation handle. The cancellation handler also
+        // forwards a pause or cancellation of the gallery's worker.
         //
         // An abandoned attempt surfaces as the retryable `AppError.networkingFailed`, never as
         // `CancellationError`, so `downloadPage`'s attempts loop retries the page with a fresh
         // failover re-resolution rather than propagating a stop the user never asked for.
-        beginPageTransfer(gid: context.gid, pageIndex: context.pageIndex)
-        defer { endPageTransfer(gid: context.gid, pageIndex: context.pageIndex) }
+        let attemptID = beginPageTransfer(gid: context.gid, pageIndex: context.pageIndex)
         let pageDownloader = self.pageDownloader
         let attempt = Task { [pageDownloader, weak self] in
             try await pageDownloader.download(request, context) { [weak self] written, expected in
@@ -157,7 +156,8 @@ extension DownloadCoordinator {
                         gid: context.gid,
                         pageIndex: context.pageIndex,
                         bytesWritten: written,
-                        bytesExpected: expected
+                        bytesExpected: expected,
+                        attemptID: attemptID
                     )
                 }
             }
@@ -167,6 +167,13 @@ extension DownloadCoordinator {
             pageIndex: context.pageIndex,
             attempt
         )
+        let watchdog = Task {
+            await watchPageTransfer(gid: context.gid, pageIndex: context.pageIndex, attemptID: attemptID)
+        }
+        defer {
+            watchdog.cancel()
+            endPageTransfer(gid: context.gid, pageIndex: context.pageIndex)
+        }
         do {
             return try await withTaskCancellationHandler {
                 try await attempt.value

@@ -55,6 +55,7 @@ struct PreviewsReducerDownloadTests: DownloadFeatureTestCase {
         await store.receive(\.loadLocalPreviewURLs)
         let requestID = store.state.localPreviewRequestID
         await store.receive(\.loadLocalPreviewURLsDone) {
+            $0.didLoadLocalPreviewURLs = true
             $0.localPreviewURLs = [:]
         }
         #expect(store.state.localPreviewRequestID == requestID)

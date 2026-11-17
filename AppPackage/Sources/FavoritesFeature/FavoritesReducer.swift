@@ -27,6 +27,7 @@ public struct FavoritesReducer: Sendable {
     private enum CancelID {
         case observeLogin
         case observeDownloads
+        case fetchMoreGalleries(Int)
     }
 
     @Reducer
@@ -83,14 +84,6 @@ public struct FavoritesReducer: Sendable {
         }
 
         public init() {}
-
-        mutating func insertGalleries(favoritesIndex: Int, galleries: [Gallery]) {
-            galleries.forEach { gallery in
-                if rawGalleries[favoritesIndex]?.contains(gallery) == false {
-                    rawGalleries[favoritesIndex]?.append(gallery)
-                }
-            }
-        }
     }
 
     public enum Action: BindableAction {
@@ -241,6 +234,7 @@ public struct FavoritesReducer: Sendable {
             case .fetchGalleries(let keyword, let sortOrder):
                 guard state.loadingState != .loading else { return .none }
                 state.rawLoadingState[state.favoritesIndex] = .loading
+                state.rawFooterLoadingState[state.favoritesIndex] = .idle
                 if let keyword = keyword {
                     state.keyword = keyword
                 }
@@ -250,7 +244,7 @@ public struct FavoritesReducer: Sendable {
                     state.rawPageNumber[state.favoritesIndex]?.resetPages()
                 }
                 let host = state.setting.galleryHost
-                return .run { [index = state.favoritesIndex, keyword = state.keyword] send in
+                let request = Effect<Action>.run { [index = state.favoritesIndex, keyword = state.keyword] send in
                     let result = await Result.Swift::init { () async throws(AppError) in
                         try await FavoritesGalleriesRequest(
                             host: host,
@@ -262,6 +256,7 @@ public struct FavoritesReducer: Sendable {
                     }
                     await send(.fetchGalleriesDone(index: index, keyword: keyword, result: result))
                 }
+                return .merge(.cancel(id: CancelID.fetchMoreGalleries(state.favoritesIndex)), request)
 
             case .fetchGalleriesDone(let targetFavIndex, let keyword, let result):
                 state.rawLoadingState[targetFavIndex] = .idle
@@ -270,24 +265,20 @@ public struct FavoritesReducer: Sendable {
                 case .success(let fetchResult):
                     let pageNumber = fetchResult.pageNumber
                     let galleries = fetchResult.galleries
-                    guard !galleries.isEmpty else {
-                        // A keyword search with no hits is "no results": the shared not-found error.
-                        guard keyword.isEmpty else {
-                            state.rawLoadingState[targetFavIndex] = .failed(.notFound)
-                            guard pageNumber.hasNextPage() else { return .none }
-                            return .send(.fetchMoreGalleries)
-                        }
-                        // Nothing saved in this category: its own empty state, not an error.
-                        state.rawPageNumber[targetFavIndex] = pageNumber
-                        state.rawDateSeekNavigation[targetFavIndex] = fetchResult.dateSeekNavigation
-                        state.rawGalleries[targetFavIndex] = []
-                        state.emptyFavoritesIndices.insert(targetFavIndex)
-                        return .none
-                    }
                     state.rawPageNumber[targetFavIndex] = pageNumber
                     state.rawDateSeekNavigation[targetFavIndex] = fetchResult.dateSeekNavigation
                     state.rawGalleries[targetFavIndex] = galleries
-                    state.sortOrder = fetchResult.sortOrder
+                    if !galleries.isEmpty {
+                        state.sortOrder = fetchResult.sortOrder
+                    } else if keyword.isEmpty {
+                        state.emptyFavoritesIndices.insert(targetFavIndex)
+                    } else {
+                        state.rawLoadingState[targetFavIndex] = .failed(.notFound)
+                        if targetFavIndex == state.favoritesIndex,
+                           pageNumber.galleryCursor(lastID: nil) != nil, pageNumber.lastItemTimestamp != nil {
+                            return .send(.fetchMoreGalleries)
+                        }
+                    }
                     return .none
                 case .failure(let error):
                     state.rawLoadingState[targetFavIndex] = .failed(error)
@@ -296,9 +287,8 @@ public struct FavoritesReducer: Sendable {
 
             case .fetchMoreGalleries:
                 let pageNumber = state.pageNumber ?? .init()
-                guard pageNumber.hasNextPage(),
-                      state.footerLoadingState != .loading,
-                      let lastID = state.galleries?.last?.id,
+                guard state.loadingState != .loading, state.footerLoadingState != .loading,
+                      let lastID = pageNumber.galleryCursor(lastID: state.galleries?.last?.id),
                       let lastItemTimestamp = pageNumber.lastItemTimestamp
                 else { return .none }
                 state.rawFooterLoadingState[state.favoritesIndex] = .loading
@@ -316,25 +306,34 @@ public struct FavoritesReducer: Sendable {
                     }
                     await send(.fetchMoreGalleriesDone(index: index, result: result))
                 }
+                .cancellable(id: CancelID.fetchMoreGalleries(state.favoritesIndex))
 
             case .fetchMoreGalleriesDone(let targetFavIndex, let result):
+                guard state.rawFooterLoadingState[targetFavIndex] == .loading else { return .none }
                 state.rawFooterLoadingState[targetFavIndex] = .idle
                 switch result {
                 case .success(let fetchResult):
-                    let pageNumber = fetchResult.pageNumber
+                    let previousPage = state.rawPageNumber[targetFavIndex]
+                    let previousLastID = state.rawGalleries[targetFavIndex]?.last?.id
+                    let previousCursor = previousPage?.galleryCursor(lastID: previousLastID)
                     let galleries = fetchResult.galleries
-                    state.rawPageNumber[targetFavIndex] = pageNumber
+                    var nextPage = fetchResult.pageNumber
+                    nextPage.stopIfCursorStalls(
+                        after: nextPage.lastItemTimestamp == previousPage?.lastItemTimestamp ? previousCursor : nil,
+                        lastID: galleries.last?.id
+                    )
+                    state.rawPageNumber[targetFavIndex] = nextPage
                     state.rawDateSeekNavigation[targetFavIndex] = fetchResult.dateSeekNavigation
-                    state.insertGalleries(favoritesIndex: targetFavIndex, galleries: galleries)
+                    let previousCount = state.rawGalleries[targetFavIndex]?.count ?? 0
+                    state.rawGalleries[targetFavIndex, default: []].appendUniqueGalleries(contentsOf: galleries)
                     state.sortOrder = fetchResult.sortOrder
-
-                    var effects: [Effect<Action>] = []
-                    if galleries.isEmpty, pageNumber.hasNextPage() {
-                        effects.append(.send(.fetchMoreGalleries))
-                    } else if !galleries.isEmpty {
+                    if (state.rawGalleries[targetFavIndex]?.count ?? 0) > previousCount {
                         state.rawLoadingState[targetFavIndex] = .idle
+                    } else if targetFavIndex == state.favoritesIndex,
+                              nextPage.galleryCursor(lastID: nil) != nil, nextPage.lastItemTimestamp != nil {
+                        return .send(.fetchMoreGalleries)
                     }
-                    return .merge(effects)
+                    return .none
 
                 case .failure(let error):
                     state.rawFooterLoadingState[targetFavIndex] = .failed(error)
@@ -361,12 +360,13 @@ public struct FavoritesReducer: Sendable {
                 state.rawFooterLoadingState[state.favoritesIndex] = .idle
                 state.rawPageNumber[state.favoritesIndex]?.resetPages()
                 let host = state.setting.galleryHost
-                return .run { [index = state.favoritesIndex] send in
+                let request = Effect<Action>.run { [index = state.favoritesIndex] send in
                     let result = await Result.Swift::init { () async throws(AppError) in
                         try await DateSeekGalleriesRequest(host: host, url: url).response()
                     }
                     await send(.performDateSeekDone(index: index, result: result))
                 }
+                return .merge(.cancel(id: CancelID.fetchMoreGalleries(state.favoritesIndex)), request)
 
             case .performDateSeekDone(let targetFavIndex, let result):
                 state.rawLoadingState[targetFavIndex] = .idle

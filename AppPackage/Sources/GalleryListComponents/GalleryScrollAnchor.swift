@@ -10,21 +10,39 @@ public enum GalleryScrollAnchor {
         guard !currentIDs.contains(id) else { return id }
         guard let previousIndex = previousIDs.firstIndex(of: id) else { return currentIDs.first }
         let remaining = Set(currentIDs)
-        return previousIDs.enumerated()
-            .filter({ remaining.contains($0.element) })
-            .min(by: { abs($0.offset - previousIndex) < abs($1.offset - previousIndex) })?
-            .element ?? currentIDs.first
+        var closestID: String?
+        var closestDistance = Int.max
+        for (offset, candidate) in previousIDs.enumerated() where remaining.contains(candidate) {
+            let distance = abs(offset - previousIndex)
+            if distance < closestDistance {
+                closestDistance = distance
+                closestID = candidate
+            }
+        }
+        return closestID ?? currentIDs.first
     }
 
     /// The gallery a person sees first: the highest row whose center lies inside the clear area,
     /// the list's frame minus the navigation and tab bars. A row mostly covered by a bar never qualifies.
     public static func topVisibleID(rowFrames: [String: CGRect], clearArea: CGRect) -> String? {
-        rowFrames
-            .filter({ $0.value.midY >= clearArea.minY && $0.value.midY < clearArea.maxY })
-            .min(by: { lhs, rhs in
-                lhs.value.minY == rhs.value.minY ? lhs.key < rhs.key : lhs.value.minY < rhs.value.minY
-            })?
-            .key
+        topVisibleID(in: rowFrames, clearArea: clearArea)
+    }
+
+    static func topVisibleID(
+        in rowFrames: [String: CGRect], clearArea: CGRect, visibleRows: Set<String>? = nil
+    ) -> String? {
+        var topID: String?
+        var topY = CGFloat.infinity
+        for (id, frame) in rowFrames {
+            guard visibleRows?.contains(id) != false,
+                  frame.midY >= clearArea.minY, frame.midY < clearArea.maxY
+            else { continue }
+            if frame.minY < topY || (frame.minY == topY && topID.map({ id < $0 }) != false) {
+                topID = id
+                topY = frame.minY
+            }
+        }
+        return topID
     }
 
     /// Whether a restored row is complete inside the clear area, or still needs the list to reveal it.

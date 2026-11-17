@@ -1,5 +1,6 @@
 import AppModels
 import BackgroundProcessingClient
+import ComposableArchitecture
 import DownloadClient
 import Foundation
 import Synchronization
@@ -238,6 +239,33 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
         #expect(error.isRetryable)
     }
 
+    @Test
+    func foregroundTransferTimesOutWithoutAContinuedProcessingSession() async throws {
+        let gallery = Self.makeGallery(gid: "240065")
+        let clock = TestClock()
+        let fixture = try await makeFrozenFixture(
+            gallery: gallery,
+            client: .noop,
+            pageDownloader: Self.hangingPageDownloader,
+            clock: clock
+        )
+        defer { removeTemporaryItem(at: fixture.context.rootURL) }
+        let manager = fixture.context.manager
+        let attempt = try await startTransfer(gid: gallery.gid, pageIndex: 3, on: manager)
+        defer { attempt.cancel() }
+        #expect(!(await manager.testingHasContinuedSession()))
+
+        let threshold = DownloadCoordinator.pageTransferAbandonThreshold
+        fixture.advance(by: threshold)
+        try await waitUntil {
+            guard await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: 3) else { return true }
+            await clock.advance(by: .seconds(threshold))
+            return !(await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: 3))
+        }
+
+        #expect(await transferError(of: attempt) as? AppError == .networkingFailed)
+    }
+
     /// The discriminating control: idle time is measured from the LAST BYTE, never from the
     /// attempt's start once a byte has arrived, so a transfer that is slow but MOVING is never
     /// abandoned however long it has been running.
@@ -474,7 +502,8 @@ private extension DownloadPageTransferProgressTests {
     func makeFrozenFixture(
         gallery: SessionGallery,
         client: BackgroundProcessingClient,
-        pageDownloader: DownloadPageDownloader? = nil
+        pageDownloader: DownloadPageDownloader? = nil,
+        clock: any Clock<Duration> = ContinuousClock()
     ) async throws -> FrozenFixture {
         let currentDate = FrozenDate(Date(timeIntervalSince1970: 1_700_000_000))
         let rootURL = FileManager.default.temporaryDirectory
@@ -486,6 +515,7 @@ private extension DownloadPageTransferProgressTests {
             pageDownloader: pageDownloader,
             backgroundProcessingClient: client,
             now: { currentDate.current },
+            clock: clock,
             environmentProbe: .constant(
                 DownloadEnvironmentSnapshot(
                     network: .wifi,

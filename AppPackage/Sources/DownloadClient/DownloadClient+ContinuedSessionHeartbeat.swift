@@ -139,10 +139,8 @@ extension DownloadCoordinator {
     /// too. That is the same starvation the sixty-second rule acts on, and the line's wording — "N
     /// ms without bytes" — stays true of it.
     ///
-    /// **The boundary, stated rather than left implicit.** Abandonment is a HEARTBEAT action, so it
-    /// exists exactly while a live session's card is at stake. That is the case the ruling covers
-    /// and the case that was observed; a foreground-only run keeps whatever timeouts the transport
-    /// gives it, and no second timer is introduced here.
+    /// Each page also watches its own idle deadline while the app is running. The heartbeat
+    /// retains its diagnostics and can abandon the same transfer if its sweep arrives first.
     func sweepStarvedPageTransfers() {
         let sweepDate = now()
         for (gid, transfers) in inFlightPageTransfers {

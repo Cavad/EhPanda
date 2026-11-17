@@ -150,13 +150,14 @@ final class GalleryRowAnchorTracker {
 
     private func reconcile() {
         guard !clearArea.isNull, !clearArea.isEmpty else { return }
-        let frames = rowFrames.filter({ visibleRows.contains($0.key) })
         switch phase {
         case .awaiting:
             return
         case .restoring(let id):
             // A row still lower than its own half height predates the scroll, so wait for it to arrive.
-            guard let frame = frames[id], frame.minY < clearArea.minY + frame.height / 2 else { return }
+            guard visibleRows.contains(id), let frame = rowFrames[id],
+                  frame.minY < clearArea.minY + frame.height / 2
+            else { return }
             phase = .tracking
             if !GalleryScrollAnchor.isUncovered(rowFrame: frame, clearArea: clearArea) {
                 revealID = id
@@ -165,7 +166,7 @@ final class GalleryRowAnchorTracker {
         case .tracking:
             break
         }
-        let id = GalleryScrollAnchor.topVisibleID(rowFrames: frames, clearArea: clearArea)
+        let id = GalleryScrollAnchor.topVisibleID(in: rowFrames, clearArea: clearArea, visibleRows: visibleRows)
         if let id, id != visibleID {
             visibleID = id
         }

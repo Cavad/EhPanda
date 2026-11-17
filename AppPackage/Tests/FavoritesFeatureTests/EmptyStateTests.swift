@@ -61,6 +61,8 @@ struct EmptyStateTests {
         let store = TestStore(initialState: state, reducer: FavoritesReducer.init)
         await store.send(.fetchGalleriesDone(index: -1, keyword: Self.keyword, result: Self.emptyFavorites())) {
             $0.rawLoadingState[-1] = .failed(.notFound)
+            $0.rawGalleries[-1] = []
+            $0.rawPageNumber[-1] = PageNumber()
             $0.emptyFavoritesIndices = []
         }
         await store.finish()

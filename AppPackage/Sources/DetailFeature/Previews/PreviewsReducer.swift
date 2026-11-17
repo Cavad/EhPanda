@@ -33,7 +33,10 @@ public struct PreviewsReducer: Sendable {
         // this screen keeps the correct page math (`previewConfig`) and Live Text `language` for
         // remote sessions — Previews itself never fetches a gallery detail to re-derive them.
         public var language: Language?
-        public var loadingState: LoadingState = .idle
+        var visiblePages = [Int]()
+        var didLoadLocalPreviewURLs = false
+        var loadingPreviewBatch: Int?
+        var failedPreviewBatches = Set<Int>()
 
         public var previewURLs = [Int: URL]()
         public var localPreviewURLs = [Int: URL]()
@@ -42,18 +45,42 @@ public struct PreviewsReducer: Sendable {
 
         public init(
             gallery: Gallery,
-            previewConfig: PreviewConfig = .normal(rows: 4), language: Language? = nil
+            previewConfig: PreviewConfig = .normal(rows: 4), language: Language? = nil,
+            previewURLs: [Int: URL] = [:]
         ) {
             self.gid = gallery.id
             self.gallery = gallery
             self.previewConfig = previewConfig
             self.language = language
+            self.previewURLs = previewURLs
+        }
+
+        var hasFailedVisiblePreviews: Bool {
+            visiblePages.contains(where: { page in
+                guard let batch = missingPreviewBatch(for: page) else { return false }
+                return failedPreviewBatches.contains(batch)
+            })
+        }
+
+        var nextVisiblePreviewBatch: Int? {
+            for page in visiblePages {
+                guard let batch = missingPreviewBatch(for: page),
+                      !failedPreviewBatches.contains(batch)
+                else { continue }
+                return batch
+            }
+            return nil
+        }
+
+        private func missingPreviewBatch(for page: Int) -> Int? {
+            guard page > 0, page <= gallery.pageCount,
+                  localPreviewURLs[page] == nil, previewURLs[page] == nil
+            else { return nil }
+            return previewConfig.pageNumber(index: page)
         }
 
         mutating func updatePreviewURLs(_ previewURLs: [Int: URL]) {
-            self.previewURLs = self.previewURLs.merging(
-                previewURLs, uniquingKeysWith: { stored, _ in stored }
-            )
+            self.previewURLs.merge(previewURLs, uniquingKeysWith: { _, fresh in fresh })
         }
     }
 
@@ -70,8 +97,9 @@ public struct PreviewsReducer: Sendable {
         case loadLocalPreviewURLsDone(requestID: UUID, urls: [Int: URL])
         case openReading(Int)
         case openReadingDone(Result<(download: DownloadedGallery, manifest: DownloadManifest), AppError>)
-        case fetchPreviewURLs(Int)
-        case fetchPreviewURLsDone(Result<[Int: URL], AppError>)
+        case visiblePagesChanged([Int])
+        case retryVisiblePreviews
+        case fetchPreviewURLsDone(batch: Int, result: Result<[Int: URL], AppError>)
     }
 
     @Dependency(\.downloadClient) private var downloadClient
@@ -106,19 +134,14 @@ public struct PreviewsReducer: Sendable {
             // Presentation-driven lifecycle: the host sends this in the state transition that pushes
             // this screen, replacing the former view `onAppear`. The gallery is seeded from the
             // pushing context; the remaining preview URLs are fetched as the grid is scrolled.
-            //
-            // The first page is fetched here rather than left to the grid's visibility callback: it
-            // is always needed, and the old per-cell `onAppear` fired for index 1 before the local
-            // page URLs had loaded, so this is the same request the screen always made.
             case .onPresented:
-                var effects: [Effect<Action>] = [
+                if state.visiblePages.isEmpty {
+                    state.visiblePages = [1]
+                }
+                return .merge(
                     .send(.observeDownloads(state.gid)),
                     .send(.loadLocalPreviewURLs(state.gid))
-                ]
-                if state.previewURLs.isEmpty {
-                    effects.append(.send(.fetchPreviewURLs(1)))
-                }
-                return .merge(effects)
+                )
 
             case .observeDownloads(let gid):
                 guard gid.isValidGID else { return .none }
@@ -147,7 +170,8 @@ public struct PreviewsReducer: Sendable {
                 guard gid.isValidGID else {
                     state.localPreviewRequestID = UUID()
                     state.localPreviewURLs = .init()
-                    return .none
+                    state.didLoadLocalPreviewURLs = true
+                    return loadVisiblePreviews(state: &state)
                 }
                 let requestID = UUID()
                 state.localPreviewRequestID = requestID
@@ -159,9 +183,11 @@ public struct PreviewsReducer: Sendable {
 
             case .loadLocalPreviewURLsDone(let requestID, let localPreviewURLs):
                 guard state.localPreviewRequestID == requestID else { return .none }
-                guard state.localPreviewURLs != localPreviewURLs else { return .none }
-                state.localPreviewURLs = localPreviewURLs
-                return .none
+                state.didLoadLocalPreviewURLs = true
+                if state.localPreviewURLs != localPreviewURLs {
+                    state.localPreviewURLs = localPreviewURLs
+                }
+                return loadVisiblePreviews(state: &state)
 
             case .openReading:
                 return .run { [galleryID = state.gallery.id] send in
@@ -191,39 +217,32 @@ public struct PreviewsReducer: Sendable {
                 state.destination = .reading(readingState)
                 return .send(.destination(.presented(.reading(.onPresented))))
 
-            case .fetchPreviewURLs(let index):
-                guard state.loadingState != .loading,
-                      let galleryURL = state.gallery.galleryURL
-                else { return .none }
-                state.loadingState = .loading
-                let pageNum = state.previewConfig.pageNumber(index: index)
-                return .run { send in
-                    let result = await Result.Swift::init { () async throws(AppError) in
-                        try await GalleryPreviewURLsRequest(
-                            galleryURL: galleryURL,
-                            pageNum: pageNum
-                        )
-                        .response()
-                    }
-                    await send(.fetchPreviewURLsDone(result))
-                }
-                .cancellable(id: CancelID.fetchPreviewURLs)
+            case .visiblePagesChanged(let pages):
+                state.visiblePages = pages
+                return loadVisiblePreviews(state: &state)
 
-            case .fetchPreviewURLsDone(let result):
-                state.loadingState = .idle
+            case .retryVisiblePreviews:
+                state.failedPreviewBatches.removeAll()
+                return loadVisiblePreviews(state: &state)
 
-                switch result {
-                case .success(let previewURLs):
-                    guard !previewURLs.isEmpty else {
-                        state.loadingState = .failed(.notFound)
-                        return .none
+            case .fetchPreviewURLsDone(let batch, let result):
+                guard state.loadingPreviewBatch == batch else { return .none }
+                state.loadingPreviewBatch = nil
+                if case .success(let urls) = result {
+                    state.updatePreviewURLs(urls)
+                    // A partial response can fill some tiles. Retry the batch only on demand if
+                    // there are still holes, including a response with no usable preview URLs.
+                    let firstPage = batch * state.previewConfig.batchSize + 1
+                    let batchRange = state.previewConfig.batchRange(index: firstPage)
+                    if batchRange.prefix(while: { $0 <= state.gallery.pageCount }).contains(where: {
+                        state.previewURLs[$0] == nil && state.localPreviewURLs[$0] == nil
+                    }) {
+                        state.failedPreviewBatches.insert(batch)
                     }
-                    state.updatePreviewURLs(previewURLs)
-                    return .none
-                case .failure(let error):
-                    state.loadingState = .failed(error)
+                } else {
+                    state.failedPreviewBatches.insert(batch)
                 }
-                return .none
+                return loadVisiblePreviews(state: &state)
             }
         }
         .haptics(
@@ -232,6 +251,25 @@ public struct PreviewsReducer: Sendable {
             hapticsClient: hapticsClient
         )
         .ifLet(\.$destination, action: \.destination)
+    }
+
+    private func loadVisiblePreviews(state: inout State) -> Effect<Action> {
+        guard state.didLoadLocalPreviewURLs, state.loadingPreviewBatch == nil,
+              let galleryURL = state.gallery.galleryURL
+        else { return .none }
+
+        // Keep one request in flight. When it finishes, choose from the current viewport so a
+        // fast scroll doesn't leave a backlog of batches for tiles the reader has already passed.
+        guard let batch = state.nextVisiblePreviewBatch else { return .none }
+
+        state.loadingPreviewBatch = batch
+        return .run { send in
+            let result = await Result.Swift::init { () async throws(AppError) in
+                try await GalleryPreviewURLsRequest(galleryURL: galleryURL, pageNum: batch).response()
+            }
+            await send(.fetchPreviewURLsDone(batch: batch, result: result))
+        }
+        .cancellable(id: CancelID.fetchPreviewURLs)
     }
 }
 

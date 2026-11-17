@@ -119,6 +119,20 @@ struct ListParserTests: TestHelper {
     }
 
     @Test
+    func testNextCursorComesFromTheGalleryPager() throws {
+        let document = try Kanna.HTML(html: """
+        <html><body>
+        <a href="?next=999">Next gallery link</a>
+        <div class="searchnav"><a href="?next=456-123">Next</a></div>
+        </body></html>
+        """, encoding: .utf8)
+
+        let pageNumber = Parser.parsePageNum(doc: document)
+        #expect(pageNumber.galleryCursor(lastID: "888") == "456")
+        #expect(pageNumber.lastItemTimestamp == "123")
+    }
+
+    @Test
     func testDateSeekNavigationIsPreservedWithNumericPager() throws {
         let document = try Kanna.HTML(html: """
         <html>
@@ -145,6 +159,7 @@ struct ListParserTests: TestHelper {
 
         #expect(pageNumber.current == 1)
         #expect(pageNumber.maximum == 2)
+        #expect(pageNumber.hasNextPage())
         #expect(navigation.newerURL?.absoluteString == "https://e-hentai.org/?prev=123")
         #expect(navigation.olderURL?.absoluteString == "https://e-hentai.org/?next=456")
     }

@@ -12,7 +12,9 @@ extension Request {
         host: GalleryHost,
         in session: URLSession
     ) async throws -> [Gallery] {
-        let galleries = try parseResponse(doc: doc, Parser.parseGalleries)
+        let parsedGalleries = try parseResponse(doc: doc, Parser.parseGalleries)
+        var galleries = [Gallery]()
+        galleries.appendUniqueGalleries(contentsOf: parsedGalleries)
         let metadata = try await GalleriesMetadataRequest(
             host: host,
             gidList: galleries.map({ (gid: $0.gid, token: $0.token) }),

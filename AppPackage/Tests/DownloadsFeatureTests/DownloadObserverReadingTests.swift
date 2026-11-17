@@ -136,7 +136,9 @@ struct DownloadObserverReadingTests: DownloadFeatureTestCase {
         continuation.yield([relevantDownload, otherDownload])
         await store.receive(\.observeDownloadsDone, [relevantDownload])
         await store.receive(\.loadLocalPreviewURLs, gallery.gid)
-        await store.receive(\.loadLocalPreviewURLsDone)
+        await store.receive(\.loadLocalPreviewURLsDone) {
+            $0.didLoadLocalPreviewURLs = true
+        }
         #expect(loadCount.value == 1)
 
         continuation.yield([relevantDownload, updatedOtherDownload])

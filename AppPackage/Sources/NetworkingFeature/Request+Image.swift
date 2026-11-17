@@ -83,15 +83,18 @@ public struct GalleryNormalImageURLsRequest: Request, Sendable {
     public init(
         thumbnailURLs: [Int: URL],
         urlSession: URLSession = .shared,
-        allowsCellular: Bool = true
+        allowsCellular: Bool = true,
+        attempts: Int = 4
     ) {
         self.thumbnailURLs = thumbnailURLs
+        self.attempts = attempts
         self.urlSession = urlSession
         self.allowsCellular = allowsCellular
     }
     public let thumbnailURLs: [Int: URL]
     public var urlSession: URLSession = .shared
     public var allowsCellular = true
+    private let attempts: Int
 
     public func response() async throws(AppError) -> (imageURLs: [Int: URL], originalImageURLs: [Int: URL]) {
         do {
@@ -121,7 +124,7 @@ public struct GalleryNormalImageURLsRequest: Request, Sendable {
 
     private func normalImageInfo(index: Int, url: URL) async throws -> NormalImageInfo {
         let request = urlRequest(url: url, allowsCellular: allowsCellular)
-        let (data, _) = try await fetch(request, in: urlSession)
+        let (data, _) = try await fetch(request, in: urlSession, attempts: attempts)
         let document = try htmlDocument(data: data)
         let info = try parseResponse(doc: document) {
             try Parser.parseGalleryNormalImageURL(doc: $0, index: index)
@@ -191,7 +194,7 @@ public struct GalleryNormalImageURLRefetchRequest: Request {
     public var allowsCellular = true
 
     public func response() async throws(AppError) -> (imageURLs: [Int: URL], response: HTTPURLResponse?) {
-        var lastError: any Error = URLError(.unknown)
+        var lastError: AppError = .unknown
         for _ in 1...4 {
             do {
                 let result = try await refetchAttempt(page: index)
@@ -203,13 +206,14 @@ public struct GalleryNormalImageURLRefetchRequest: Request {
             } catch is MissingThumbnailIndexError {
                 throw AppError.unknown
             } catch {
-                if (error as? URLError)?.code == .cancelled || Task.isCancelled {
-                    throw mapAppError(error: error)
+                let mappedError = mapAppError(error: error)
+                if (error as? URLError)?.code == .cancelled || Task.isCancelled || !mappedError.isRetryable {
+                    throw mappedError
                 }
-                lastError = error
+                lastError = mappedError
             }
         }
-        throw mapAppError(error: lastError)
+        throw lastError
     }
 
     /// - Parameter page: the 1-based page number this refetch targets, which is also the key

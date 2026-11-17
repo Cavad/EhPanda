@@ -59,11 +59,13 @@ public struct GalleryList: View {
     public var body: some View {
         let focusedGalleryID = galleryFocus ?? $localFocusedGalleryID
         let scrollPosition = externalScrollPositionID ?? $localScrollPositionID
+        let galleryIDs = galleries.map(\.id)
         VStack(spacing: 0) {
             switch displayMode {
             case .row:
                 DetailList(
                     galleries: galleries,
+                    galleryIDs: galleryIDs,
                     pageNumber: pageNumber,
                     footerLoadingState: footerLoadingState,
                     notice: notice,
@@ -106,7 +108,7 @@ public struct GalleryList: View {
         }
         .refreshable { fetchAction?() }
         .scrollEdgeEffectStyle(.soft, for: .top)
-        .onChange(of: galleries.map(\.id), initial: true) { previousIDs, ids in
+        .onChange(of: galleryIDs, initial: true) { previousIDs, ids in
             scrollPosition.wrappedValue = GalleryScrollAnchor.retaining(
                 scrollPosition.wrappedValue, previousIDs: previousIDs, currentIDs: ids
             )
@@ -118,6 +120,7 @@ private struct DetailList: View {
     @Binding private var scrollPositionID: String?
     private let galleryFocus: AccessibilityFocusState<String?>.Binding
     private let galleries: [Gallery]
+    private let galleryIDs: [String]
     private let downloadBadges: [String: DownloadBadge]
     private let pageNumber: PageNumber?
     private let footerLoadingState: LoadingState
@@ -128,7 +131,7 @@ private struct DetailList: View {
     private let translateAction: ((String) -> TagTranslationLookup)?
 
     init(
-        galleries: [Gallery], pageNumber: PageNumber?,
+        galleries: [Gallery], galleryIDs: [String], pageNumber: PageNumber?,
         footerLoadingState: LoadingState, notice: LocalizedStringResource? = nil,
         fetchMoreAction: (() -> Void)?,
         navigateAction: ((Gallery) -> Void)? = nil,
@@ -140,6 +143,7 @@ private struct DetailList: View {
     ) {
         _scrollPositionID = scrollPositionID
         self.galleries = galleries
+        self.galleryIDs = galleryIDs
         self.downloadBadges = downloadBadges
         self.pageNumber = pageNumber
         self.footerLoadingState = footerLoadingState
@@ -151,18 +155,10 @@ private struct DetailList: View {
         self.galleryFocus = galleryFocus
     }
 
-    private func shouldShowFooter(gallery: Gallery) -> Bool {
-        guard let pageNumber = pageNumber else { return false }
-
-        let isLastGallery = gallery == galleries.last
-        let isPageNumberValid = pageNumber.hasNextPage()
-        let isLoadingStateIdle = footerLoadingState == .idle
-
-        return isLastGallery && isPageNumberValid && !isLoadingStateIdle
-    }
-
     var body: some View {
-        GalleryAnchoredList(anchorID: $scrollPositionID, ids: galleries.map(\.id)) {
+        let canLoadMore = pageNumber?.hasNextPage() == true
+        let lastGalleryID = galleryIDs.last
+        GalleryAnchoredList(anchorID: $scrollPositionID, ids: galleryIDs) {
             notice.map(ListNoticeView.init)
 
             ForEach(galleries) { gallery in
@@ -192,13 +188,13 @@ private struct DetailList: View {
                 // Fetch-more fires when the trailing row actually becomes visible in the scroll
                 // container. Reducer loading guards make repeated visibility callbacks harmless.
                 .onScrollVisibilityChange(threshold: 0.1) { isVisible in
-                    if isVisible, gallery == galleries.last {
+                    if isVisible, gallery.id == lastGalleryID, canLoadMore, footerLoadingState == .idle {
                         fetchMoreAction?()
                     }
                 }
-                if shouldShowFooter(gallery: gallery) {
-                    FetchMoreFooter(loadingState: footerLoadingState, retryAction: fetchMoreAction)
-                }
+            }
+            if lastGalleryID != nil, canLoadMore, footerLoadingState != .idle {
+                FetchMoreFooter(loadingState: footerLoadingState, retryAction: fetchMoreAction)
             }
         }
     }
@@ -247,6 +243,8 @@ private struct GridList: View {
     }
 
     var body: some View {
+        let canLoadMore = pageNumber?.hasNextPage() == true
+        let lastGalleryID = galleries.last?.id
         ScrollView {
             if let notice {
                 ListNoticeView(notice: notice)
@@ -276,14 +274,15 @@ private struct GridList: View {
                     .accessibilityIdentifier("gallery-list-item-\(gallery.id)")
                     .accessibilityFocused(galleryFocus, equals: gallery.id)
                     .onScrollVisibilityChange(threshold: 0.1) { isVisible in
-                        guard isVisible, gallery == galleries.last else { return }
-                        fetchMoreAction?()
+                        if isVisible, gallery.id == lastGalleryID, canLoadMore, footerLoadingState == .idle {
+                            fetchMoreAction?()
+                        }
                     }
                 }
             }
             .scrollTargetLayout()
             .padding(.horizontal)
-            if let pageNumber, pageNumber.hasNextPage() {
+            if canLoadMore {
                 FetchMoreFooter(loadingState: footerLoadingState, retryAction: fetchMoreAction)
             }
         }

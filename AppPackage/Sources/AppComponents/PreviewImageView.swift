@@ -78,6 +78,7 @@ private struct LocalPreviewImageView<Placeholder: View>: View {
     }
 
     var body: some View {
+        let key = cacheKey
         Group {
             if let thumbnail {
                 Image(uiImage: thumbnail)
@@ -95,14 +96,15 @@ private struct LocalPreviewImageView<Placeholder: View>: View {
         // there is no single owning reducer to move the load into, and the cache key it is keyed on
         // is derived from file metadata read here in the view.
         // swiftlint:disable:next lifecycle_modifiers
-        .task(id: cacheKey) {
-            await loadThumbnail()
+        .task(id: key) {
+            await loadThumbnail(forKey: key)
         }
     }
 
     @MainActor
-    private func loadThumbnail() async {
-        if let cachedThumbnail = LocalPreviewThumbnailCache.shared.image(forKey: cacheKey) {
+    private func loadThumbnail(forKey key: String) async {
+        guard !Task.isCancelled else { return }
+        if let cachedThumbnail = LocalPreviewThumbnailCache.shared.image(forKey: key) {
             thumbnail = cachedThumbnail
             return
         }
@@ -111,6 +113,7 @@ private struct LocalPreviewImageView<Placeholder: View>: View {
         // of a detached task) lets the SwiftUI `.task` cancellation propagate, so a
         // cell that scrolls off screen sheds its in-flight decode rather than piling
         // up un-sheddable work during fast scrolling.
+        thumbnail = nil
         let generatedThumbnail = await LocalPreviewThumbnailGenerator.make(
             fileURL: fileURL,
             maxPixelSize: maxPixelSize
@@ -118,7 +121,7 @@ private struct LocalPreviewImageView<Placeholder: View>: View {
 
         guard !Task.isCancelled else { return }
         if let generatedThumbnail {
-            LocalPreviewThumbnailCache.shared.store(generatedThumbnail, forKey: cacheKey)
+            LocalPreviewThumbnailCache.shared.store(generatedThumbnail, forKey: key)
         }
         thumbnail = generatedThumbnail
     }
@@ -135,7 +138,7 @@ private enum LocalPreviewThumbnailGenerator {
 
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceShouldCacheImmediately: false,
+            kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: max(Int(maxPixelSize.rounded(.up)), 1)
         ]
@@ -159,11 +162,17 @@ private final class LocalPreviewThumbnailCache {
 
     private let cache = NSCache<NSString, UIImage>()
 
+    private init() {
+        cache.totalCostLimit = 32 * 1024 * 1024
+    }
+
     func image(forKey key: String) -> UIImage? {
         cache.object(forKey: key as NSString)
     }
 
     func store(_ image: UIImage, forKey key: String) {
-        cache.setObject(image, forKey: key as NSString)
+        guard let cgImage = image.cgImage else { return }
+        let decodedByteCount = cgImage.bytesPerRow * cgImage.height
+        cache.setObject(image, forKey: key as NSString, cost: decodedByteCount)
     }
 }

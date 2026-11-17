@@ -45,14 +45,6 @@ public struct WatchedReducer: Sendable {
         public var downloadBadges = [String: DownloadBadge]()
 
         public init() {}
-
-        mutating func insertGalleries(_ galleries: [Gallery]) {
-            galleries.forEach { gallery in
-                if !self.galleries.contains(gallery) {
-                    self.galleries.append(gallery)
-                }
-            }
-        }
     }
 
     public enum Action: BindableAction {
@@ -151,10 +143,11 @@ public struct WatchedReducer: Sendable {
                     state.keyword = keyword
                 }
                 state.loadingState = .loading
+                state.footerLoadingState = .idle
                 state.pageNumber.resetPages()
                 let filter = state.watchedFilter
                 let host = state.setting.galleryHost
-                return .run { [keyword = state.keyword] send in
+                let request = Effect<Action>.run { [keyword = state.keyword] send in
                     let result = await Result.Swift::init { () async throws(AppError) in
                         try await WatchedGalleriesRequest(
                             host: host,
@@ -166,20 +159,22 @@ public struct WatchedReducer: Sendable {
                     await send(.fetchGalleriesDone(result))
                 }
                 .cancellable(id: CancelID.fetchGalleries)
+                return .merge(.cancel(id: CancelID.fetchMoreGalleries), request)
 
             case .fetchGalleriesDone(let result):
                 state.loadingState = .idle
                 switch result {
                 case .success(let response):
                     let galleries = response.galleries
-                    guard !galleries.isEmpty else {
-                        state.loadingState = .failed(.notFound)
-                        guard response.pageNumber.hasNextPage() else { return .none }
-                        return .send(.fetchMoreGalleries)
-                    }
                     state.pageNumber = response.pageNumber
                     state.dateSeekNavigation = response.dateSeekNavigation
                     state.galleries = galleries
+                    if galleries.isEmpty {
+                        state.loadingState = .failed(.notFound)
+                        if state.pageNumber.galleryCursor(lastID: nil) != nil {
+                            return .send(.fetchMoreGalleries)
+                        }
+                    }
                     return .none
                 case .failure(let error):
                     state.loadingState = .failed(error)
@@ -187,10 +182,8 @@ public struct WatchedReducer: Sendable {
                 return .none
 
             case .fetchMoreGalleries:
-                let pageNumber = state.pageNumber
-                guard pageNumber.hasNextPage(),
-                      state.footerLoadingState != .loading,
-                      let lastID = state.galleries.last?.id
+                guard state.loadingState != .loading, state.footerLoadingState != .loading,
+                      let lastID = state.pageNumber.galleryCursor(lastID: state.galleries.last?.id)
                 else { return .none }
                 state.footerLoadingState = .loading
                 let filter = state.watchedFilter
@@ -210,21 +203,24 @@ public struct WatchedReducer: Sendable {
                 .cancellable(id: CancelID.fetchMoreGalleries)
 
             case .fetchMoreGalleriesDone(let result):
+                guard state.footerLoadingState == .loading else { return .none }
                 state.footerLoadingState = .idle
                 switch result {
                 case .success(let response):
                     let galleries = response.galleries
-                    state.pageNumber = response.pageNumber
+                    let previousCursor = state.pageNumber.galleryCursor(lastID: state.galleries.last?.id)
+                    var nextPage = response.pageNumber
+                    nextPage.stopIfCursorStalls(after: previousCursor, lastID: galleries.last?.id)
+                    state.pageNumber = nextPage
                     state.dateSeekNavigation = response.dateSeekNavigation
-                    state.insertGalleries(galleries)
-
-                    var effects: [Effect<Action>] = []
-                    if galleries.isEmpty, response.pageNumber.hasNextPage() {
-                        effects.append(.send(.fetchMoreGalleries))
-                    } else if !galleries.isEmpty {
+                    let previousCount = state.galleries.count
+                    state.galleries.appendUniqueGalleries(contentsOf: galleries)
+                    if state.galleries.count > previousCount {
                         state.loadingState = .idle
+                    } else if nextPage.galleryCursor(lastID: nil) != nil {
+                        return .send(.fetchMoreGalleries)
                     }
-                    return .merge(effects)
+                    return .none
 
                 case .failure(let error):
                     state.footerLoadingState = .failed(error)
@@ -251,13 +247,14 @@ public struct WatchedReducer: Sendable {
                 state.footerLoadingState = .idle
                 state.pageNumber.resetPages()
                 let host = state.setting.galleryHost
-                return .run { send in
+                let request = Effect<Action>.run { send in
                     let result = await Result.Swift::init { () async throws(AppError) in
                         try await DateSeekGalleriesRequest(host: host, url: url).response()
                     }
                     await send(.performDateSeekDone(result))
                 }
                 .cancellable(id: CancelID.fetchDateSeekGalleries)
+                return .merge(.cancel(id: CancelID.fetchMoreGalleries), request)
 
             case .performDateSeekDone(let result):
                 state.loadingState = .idle

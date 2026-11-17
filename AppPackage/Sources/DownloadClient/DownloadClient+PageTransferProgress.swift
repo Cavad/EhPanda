@@ -19,10 +19,8 @@ private let logger = Logger(category: .init(describing: DownloadCoordinator.self
 /// starting or ending makes no transfer less in flight, and scoping it to a session would strand a
 /// transfer that outlives one.
 ///
-/// **Four of its fields belong to the current ATTEMPT rather than to the page** — `startDate`,
-/// `startedInBackground`, `firstByteDate`/`lastByteDate`, `isAbandoned` and the `attempt` handle —
-/// and every one of them is reset by `beginPageTransfer`, so a retry measures its own time to first
-/// byte, its own idle time, and cancels its own task. Only `creditedSubunits` crosses attempts.
+/// Each attempt measures its own time to first byte and idle time and owns its cancellation
+/// handle. `beginPageTransfer` carries only the page's earned credit across attempts.
 struct InFlightPageTransfer: Sendable {
     /// This page's earned sub-page credit, in `ContinuedProcessingSession.subunitsPerUnit` per
     /// page. Monotone while the entry lives.
@@ -33,6 +31,8 @@ struct InFlightPageTransfer: Sendable {
     /// were issued in. Taking the greater value makes both inert; an assignment would let either
     /// rewind the card.
     var creditedSubunits: Int64 = 0
+    /// Distinguishes late callbacks from the attempt currently occupying this page.
+    var attemptID = UUID()
     /// When the CURRENT attempt started, so a retry measures its own time to first byte.
     var startDate: Date
     /// Whether the app was backgrounded when this attempt was created — the field that
@@ -76,13 +76,15 @@ extension DownloadCoordinator {
     /// Everything about the ATTEMPT is reset and the earned credit is deliberately kept: the page
     /// is the unit the card reports on, and a retry is the same page continuing rather than a new
     /// one starting.
-    func beginPageTransfer(gid: String, pageIndex: Int) {
+    @discardableResult
+    func beginPageTransfer(gid: String, pageIndex: Int) -> UUID {
         let startDate = now()
         var transfer = inFlightPageTransfers[gid]?[pageIndex] ?? InFlightPageTransfer(
             startDate: startDate,
             startedInBackground: isSceneInBackground,
             isTransferring: true
         )
+        transfer.attemptID = UUID()
         transfer.startDate = startDate
         transfer.startedInBackground = isSceneInBackground
         transfer.firstByteDate = nil
@@ -92,6 +94,7 @@ extension DownloadCoordinator {
         transfer.isAbandoned = false
         transfer.attempt = nil
         inFlightPageTransfers[gid, default: [:]][pageIndex] = transfer
+        return transfer.attemptID
     }
 
     /// Closes the attempt, and reports a transfer that ended having never received a byte.
@@ -101,6 +104,7 @@ extension DownloadCoordinator {
     func endPageTransfer(gid: String, pageIndex: Int) {
         guard var transfer = inFlightPageTransfers[gid]?[pageIndex] else { return }
         transfer.isTransferring = false
+        transfer.attempt = nil
         let elapsed = now().timeIntervalSince(transfer.startDate)
         if transfer.firstByteDate == nil,
            !transfer.stallLogged,
@@ -131,9 +135,13 @@ extension DownloadCoordinator {
         gid: String,
         pageIndex: Int,
         bytesWritten: Int64,
-        bytesExpected: Int64
+        bytesExpected: Int64,
+        attemptID: UUID? = nil
     ) async {
-        guard var transfer = inFlightPageTransfers[gid]?[pageIndex] else { return }
+        guard var transfer = inFlightPageTransfers[gid]?[pageIndex],
+              transfer.isTransferring, !transfer.isAbandoned,
+              attemptID == nil || transfer.attemptID == attemptID
+        else { return }
         if bytesWritten > 0 {
             // ONE read of the clock stamps both dates, so "when the first byte arrived" and "when
             // the last byte arrived" are the same instant for the first report rather than two
@@ -186,6 +194,29 @@ extension DownloadCoordinator {
         inFlightPageTransfers[gid]?[pageIndex]?.attempt = attempt
     }
 
+    /// The transfer's own timeout runs even when iOS has no continued-processing card.
+    /// Recheck activity after sleeping so a transfer that is still receiving bytes can finish.
+    func watchPageTransfer(gid: String, pageIndex: Int, attemptID: UUID) async {
+        var delay = Self.pageTransferAbandonThreshold
+        while !Task.isCancelled {
+            do {
+                try await clock.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let transfer = inFlightPageTransfers[gid]?[pageIndex],
+                  transfer.attemptID == attemptID, transfer.isTransferring, !transfer.isAbandoned
+            else { return }
+
+            let idle = transfer.idleInterval(at: now())
+            if idle >= Self.pageTransferAbandonThreshold {
+                abandonPageTransfer(gid: gid, pageIndex: pageIndex, idle: idle)
+                return
+            }
+            delay = Self.pageTransferAbandonThreshold - idle
+        }
+    }
+
     /// Gives up on an attempt that has produced no bytes for `pageTransferAbandonThreshold` and
     /// cancels it, so the page can be retried instead of waiting on a host that stopped answering.
     ///
@@ -198,14 +229,11 @@ extension DownloadCoordinator {
     /// network stopped delivering — so `rawPageDownloadResponse` surfaces it as the retryable
     /// `AppError.networkingFailed` and the page rides the retry path it already had:
     /// `downloadPage`'s attempts loop, which re-resolves the image URL through the failover request
-    /// and so may reach a different image host, which is the right remedy for a silent one. No new
-    /// retry loop is introduced and `withRetry`/`retryLimit` are untouched — page transfers
-    /// deliberately bypass those.
+    /// and can ask the main site for direct delivery after peer attempts fail.
     ///
     /// Two consequences, both accepted rather than special-cased:
-    /// - With auto-retry on (the default) a persistently starved page fails after two attempts,
-    ///   roughly two minutes plus resolution latency; with the user's auto-retry off it fails after
-    ///   one, like every other network failure under that setting. The setting governs.
+    /// - With auto-retry on, the app tries another peer and can make one main-site request.
+    ///   With auto-retry off, the page stops after the first failed attempt.
     /// - A transfer the SYSTEM has merely deferred — a discretionary background transfer waiting
     ///   its turn — is treated exactly like a hung one. That is inside the sixty-second rule as
     ///   decided, and the page stays retryable through the record's own retry surface.
@@ -215,7 +243,7 @@ extension DownloadCoordinator {
     /// caller's cancellation.
     func abandonPageTransfer(gid: String, pageIndex: Int, idle: TimeInterval) {
         guard var transfer = inFlightPageTransfers[gid]?[pageIndex],
-              transfer.isTransferring
+              transfer.isTransferring, !transfer.isAbandoned
         else { return }
         transfer.isAbandoned = true
         transfer.stallLogged = true

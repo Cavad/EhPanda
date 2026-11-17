@@ -18,7 +18,8 @@ public struct ToplistsReducer: Sendable {
     }
 
     private enum CancelID {
-        case fetchGalleries, fetchMoreGalleries
+        case fetchGalleries
+        case fetchMoreGalleries(ToplistsType)
     }
 
     @ObservableState
@@ -55,14 +56,6 @@ public struct ToplistsReducer: Sendable {
         }
 
         public init() {}
-
-        mutating func insertGalleries(type: ToplistsType, galleries: [Gallery]) {
-            galleries.forEach { gallery in
-                if rawGalleries[type]?.contains(gallery) == false {
-                    rawGalleries[type]?.append(gallery)
-                }
-            }
-        }
     }
 
     public enum Action: BindableAction {
@@ -150,13 +143,14 @@ public struct ToplistsReducer: Sendable {
             case .fetchGalleries(let pageNum):
                 guard state.loadingState != .loading else { return .none }
                 state.rawLoadingState[state.type] = .loading
+                state.rawFooterLoadingState[state.type] = .idle
                 if state.pageNumber == nil {
                     state.rawPageNumber[state.type] = PageNumber()
                 } else {
                     state.rawPageNumber[state.type]?.resetPages()
                 }
                 let host = state.setting.galleryHost
-                return .run { [type = state.type] send in
+                let request = Effect<Action>.run { [type = state.type] send in
                     let result = await Result.Swift::init { () async throws(AppError) in
                         try await ToplistsGalleriesRequest(
                             host: host,
@@ -168,18 +162,20 @@ public struct ToplistsReducer: Sendable {
                     await send(.fetchGalleriesDone(type: type, result: result))
                 }
                 .cancellable(id: CancelID.fetchGalleries)
+                return .merge(.cancel(id: CancelID.fetchMoreGalleries(state.type)), request)
 
             case .fetchGalleriesDone(let type, let result):
                 state.rawLoadingState[type] = .idle
                 switch result {
                 case .success(let (pageNumber, galleries)):
-                    guard !galleries.isEmpty else {
-                        state.rawLoadingState[type] = .failed(.notFound)
-                        guard pageNumber.hasNextPage() else { return .none }
-                        return .send(.fetchMoreGalleries)
-                    }
                     state.rawPageNumber[type] = pageNumber
                     state.rawGalleries[type] = galleries
+                    if galleries.isEmpty {
+                        state.rawLoadingState[type] = .failed(.notFound)
+                        if type == state.type, pageNumber.hasNextPage() {
+                            return .send(.fetchMoreGalleries)
+                        }
+                    }
                     return .none
                 case .failure(let error):
                     state.rawLoadingState[type] = .failed(error)
@@ -188,7 +184,7 @@ public struct ToplistsReducer: Sendable {
 
             case .fetchMoreGalleries:
                 let pageNumber = state.pageNumber ?? .init()
-                guard pageNumber.hasNextPage(),
+                guard pageNumber.hasNextPage(), state.loadingState != .loading,
                       state.footerLoadingState != .loading
                 else { return .none }
                 state.rawFooterLoadingState[state.type] = .loading
@@ -205,22 +201,27 @@ public struct ToplistsReducer: Sendable {
                     }
                     await send(.fetchMoreGalleriesDone(type: type, result: result))
                 }
-                .cancellable(id: CancelID.fetchMoreGalleries)
+                .cancellable(id: CancelID.fetchMoreGalleries(state.type))
 
             case .fetchMoreGalleriesDone(let type, let result):
+                guard state.rawFooterLoadingState[type] == .loading else { return .none }
                 state.rawFooterLoadingState[type] = .idle
                 switch result {
                 case .success(let (pageNumber, galleries)):
-                    state.rawPageNumber[type] = pageNumber
-                    state.insertGalleries(type: type, galleries: galleries)
-
-                    var effects: [Effect<Action>] = []
-                    if galleries.isEmpty, pageNumber.hasNextPage() {
-                        effects.append(.send(.fetchMoreGalleries))
-                    } else if !galleries.isEmpty {
-                        state.rawLoadingState[type] = .idle
+                    let previousPage = state.rawPageNumber[type]?.current ?? 0
+                    var nextPage = pageNumber
+                    if nextPage.current <= previousPage {
+                        nextPage = .init(current: previousPage, maximum: previousPage)
                     }
-                    return .merge(effects)
+                    state.rawPageNumber[type] = nextPage
+                    let previousCount = state.rawGalleries[type]?.count ?? 0
+                    state.rawGalleries[type, default: []].appendUniqueGalleries(contentsOf: galleries)
+                    if (state.rawGalleries[type]?.count ?? 0) > previousCount {
+                        state.rawLoadingState[type] = .idle
+                    } else if type == state.type, nextPage.hasNextPage() {
+                        return .send(.fetchMoreGalleries)
+                    }
+                    return .none
 
                 case .failure(let error):
                     state.rawFooterLoadingState[type] = .failed(error)

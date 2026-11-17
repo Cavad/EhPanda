@@ -3,6 +3,7 @@ import AppModels
 import ComposableArchitecture
 import ReadingFeature
 import Resources
+import SFSafeSymbols
 import SwiftUI
 
 struct PreviewsView: View {
@@ -30,19 +31,18 @@ struct PreviewsView: View {
     }
 
     var body: some View {
-        let displayPreviewURLs = store.localPreviewURLs.merging(
-            store.previewURLs,
-            uniquingKeysWith: { local, _ in local }
-        )
+        let localPreviewURLs = store.localPreviewURLs
+        let remotePreviewURLs = store.previewURLs
         ScrollView {
             LazyVGrid(columns: gridItems) {
-                ForEach(1..<store.gallery.pageCount + 1, id: \.self) { page in
+                ForEach(0..<max(store.gallery.pageCount, 0), id: \.self) { offset in
+                    let page = offset + 1
                     VStack {
                         Button {
                             store.send(.updateReadingProgress(page))
                             store.send(.openReading(page))
                         } label: {
-                            PreviewThumbnail(url: displayPreviewURLs[page])
+                            PreviewThumbnail(url: localPreviewURLs[page] ?? remotePreviewURLs[page])
                         }
                         // The thumbnail is the button's only content; the page it opens is its name.
                         .accessibilityLabel(.accessibilityPreviewPage(page: page))
@@ -60,14 +60,20 @@ struct PreviewsView: View {
             item: $store.scope(\.$destination, action: \.destination).reading
         ) { store in
             ReadingView(store: store)
-            .privacyMask()
+                .privacyMask()
         }
-        // Paged lazy loading, driven by what is actually on screen rather than by each cell's
-        // appearance. Preview URLs arrive ten at a time, so only every tenth page triggers a fetch;
-        // the first page is requested by the reducer on presentation.
-        .onScrollTargetVisibilityChange(idType: Int.self) { visiblePages in
-            for page in visiblePages where displayPreviewURLs[page] == nil && (page - 1) % 10 == 0 {
-                store.send(.fetchPreviewURLs(page))
+        .onScrollTargetVisibilityChange(idType: Int.self) { visibleOffsets in
+            store.send(.visiblePagesChanged(visibleOffsets.map({ $0 + 1 })))
+        }
+        .toolbar {
+            if store.hasFailedVisiblePreviews {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        store.send(.retryVisiblePreviews)
+                    } label: {
+                        Label(.RLocalizable.retry, systemSymbol: .arrowClockwise)
+                    }
+                }
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .top)

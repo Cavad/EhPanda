@@ -76,7 +76,9 @@ struct DownloadObserverRefreshTests: DownloadFeatureTestCase {
         continuation.yield([relevantDownload])
         await store.receive(\.observeDownloadsDone, [relevantDownload])
         await store.receive(\.loadLocalPreviewURLs, gallery.gid)
-        await store.receive(\.loadLocalPreviewURLsDone)
+        await store.receive(\.loadLocalPreviewURLsDone) {
+            $0.didLoadLocalPreviewURLs = true
+        }
 
         continuation.yield([])
         await store.receive(\.observeDownloadsDone, [])

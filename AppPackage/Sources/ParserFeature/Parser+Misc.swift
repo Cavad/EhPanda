@@ -30,47 +30,33 @@ extension Parser {
 
     /// Parses the gallery-list pager.
     public static func parsePageNum(doc: any HTMLDocument) -> PageNumber {
-        var current = 0
-        var maximum = 0
-
         guard let link = doc.at_xpath("//table [@class='ptt']"),
               let currentStr = link.at_xpath("//td [@class='ptds']")?.text
         else {
-            if let link = doc.at_xpath("//div [@class='searchnav']") {
-                var timestamp: String?
-                var isEnabled = false
-
-                for aLink in link.xpath("//a") where aLink.text?.contains("Next") == true {
-                    timestamp = aLink["href"]
-                        .map(URLComponents.init)??
-                        .queryItems?
-                        .first(where: { $0.name == "next" })?
-                        .value?
-                        .split(separator: "-")
-                        .last
-                        .map(String.init)
-
-                    isEnabled = true
-                    break
-                }
-
+            guard let navigation = doc.at_xpath("//div [@class='searchnav']") else { return PageNumber() }
+            for link in navigation.xpath(".//a") where link.text?.contains("Next") == true {
+                let cursor = link["href"]
+                    .map(URLComponents.init)??
+                    .queryItems?
+                    .first(where: { $0.name == "next" })?
+                    .value?
+                    .split(separator: "-")
+                guard let cursor, let gid = cursor.first else { continue }
                 return PageNumber(
-                    lastItemTimestamp: timestamp,
-                    isNextButtonEnabled: isEnabled
+                    lastItemTimestamp: cursor.last.map(String.init),
+                    isNextButtonEnabled: true,
+                    nextGalleryID: String(gid)
                 )
-            } else {
-                return PageNumber(isNextButtonEnabled: false)
             }
+            return PageNumber()
         }
 
-        if let range = currentStr.range(of: "-") {
-            current = (Int(currentStr[range.upperBound...]) ?? 1) - 1
-        } else {
-            current = (Int(currentStr) ?? 1) - 1
-        }
-        for aLink in link.xpath("//a") {
+        let page = currentStr.split(separator: "-").last.flatMap { Int($0) } ?? 1
+        let current = max(page, 1) - 1
+        var maximum = current
+        for aLink in link.xpath(".//a") {
             if let num = Int(aLink.text ?? "") {
-                maximum = num - 1
+                maximum = max(maximum, max(num, 1) - 1)
             }
         }
         return PageNumber(current: current, maximum: maximum)

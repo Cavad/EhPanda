@@ -61,18 +61,21 @@ public struct GalleryThumbnailCell: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .accessibilityIdentifier("gallery-grid-title-\(gallery.id)")
-                let tagContents = gallery.tagContents(maximum: setting.listTagsNumberMaximum)
-                if setting.showTagsInList, !tagContents.isEmpty {
-                    TagCloudView(data: tagContents) { content in
-                        let translation = translateAction?(content.rawNamespace + content.text).translation
-                        TagCloudCell(
-                            text: translation?.displayValue ?? content.text,
-                            imageURL: translation?.valueImageURL,
-                            showsImages: setting.showImagesInTags,
-                            font: .caption2, padding: .init(top: 2, leading: 4, bottom: 2, trailing: 4),
-                            textColor: content.backgroundColor != nil ? content.textColor ?? .secondary : .secondary,
-                            backgroundColor: content.backgroundColor ?? tagColor
-                        )
+                if setting.showTagsInList {
+                    let tagContents = gallery.tagContents(maximum: setting.listTagsNumberMaximum)
+                    if !tagContents.isEmpty {
+                        TagCloudView(data: tagContents) { content in
+                            let translation = translateAction?(content.rawNamespace + content.text).translation
+                            TagCloudCell(
+                                text: translation?.displayValue ?? content.text,
+                                imageURL: translation?.valueImageURL,
+                                showsImages: setting.showImagesInTags,
+                                font: .caption2, padding: .init(top: 2, leading: 4, bottom: 2, trailing: 4),
+                                textColor: content.backgroundColor == nil
+                                    ? .secondary : content.textColor ?? .secondary,
+                                backgroundColor: content.backgroundColor ?? tagColor
+                            )
+                        }
                     }
                 }
                 pageCountAndLanguage

@@ -1,5 +1,7 @@
 import AppModels
+import AppTools
 import Foundation
+import NetworkingFeature
 
 // MARK: - Download Single Page
 extension DownloadCoordinator {
@@ -11,19 +13,33 @@ extension DownloadCoordinator {
         guard let source = context.source else {
             throw AppError.notFound
         }
-        let attempts = context.options.autoRetryFailedPages ? 2 : 1
+        let attempts = context.options.autoRetryFailedPages ? 3 : 1
         var capturedError: AppError = .unknown
         var failover: ResolvedImageSource?
+        var failedImageURLs = Set<URL>()
 
-        for _ in 0..<attempts {
+        for attempt in 0..<attempts {
+            try Task.checkCancellation()
+            var attemptedImageURL: URL?
             do {
-                let resolved = try await resolvedImageSource(
-                    index: index,
-                    payload: context.payload,
-                    options: context.options,
-                    source: source,
-                    failover: failover
-                )
+                let resolved: ResolvedImageSource
+                if attempt == 2 {
+                    guard !failedImageURLs.isEmpty, Self.allowsMainSiteRetry(after: capturedError),
+                          let mainSiteImage = try await resolveMainSiteImage(
+                              page: index, context: context, source: source
+                          ),
+                          !failedImageURLs.contains(mainSiteImage.imageURL)
+                    else { break }
+                    resolved = mainSiteImage
+                } else {
+                    resolved = try await resolvedImageSource(
+                        index: index,
+                        payload: context.payload,
+                        options: context.options,
+                        source: source,
+                        failover: failover
+                    )
+                }
                 failover = resolved
                 if let result = try await attemptResolvedCacheRestore(
                     index: index,
@@ -33,6 +49,7 @@ extension DownloadCoordinator {
                 ) {
                     return result
                 }
+                attemptedImageURL = resolved.imageURL
                 return try await downloadAndSavePage(
                     index: index,
                     resolvedImageSource: resolved,
@@ -42,8 +59,14 @@ extension DownloadCoordinator {
             } catch is CancellationError {
                 throw CancellationError()
             } catch let error as AppError {
+                try Task.checkCancellation()
                 capturedError = error
-                guard error.isRetryable else { throw error }
+                if let attemptedImageURL {
+                    failedImageURLs.insert(attemptedImageURL)
+                }
+                // An image-node 404 can mean an expired URL. A missing viewer page or an
+                // account-level error still surfaces immediately.
+                guard error.isRetryable || (error == .notFound && attemptedImageURL != nil) else { throw error }
             } catch {
                 if Self.isCancellationLikeError(error) {
                     throw CancellationError()
@@ -53,6 +76,55 @@ extension DownloadCoordinator {
         }
 
         throw capturedError
+    }
+
+    private static func allowsMainSiteRetry(after error: AppError) -> Bool {
+        switch error {
+        case .networkingFailed, .notFound, .parseFailed, .webImageFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The single-page viewer supports a direct-delivery request for eligible accounts.
+    /// Use the site's rendered image URL so the configured resolution and account limits apply.
+    private func resolveMainSiteImage(
+        page: Int, context: PageDownloadContext, source: ResolvedSource
+    ) async throws -> ResolvedImageSource? {
+        let payload = context.payload
+        let viewerURL: URL
+        switch source {
+        case .normal(let thumbnails):
+            guard let thumbnail = thumbnails[page],
+                  let route = GalleryURLParser.parse(thumbnail),
+                  route.isGalleryImageURL, route.gid == payload.gallery.gid, route.pageIndex == page
+            else { return nil }
+            viewerURL = route.url
+        case .mpv(_, let imageKeys):
+            guard let key = imageKeys[page], key.count == 10,
+                  key.allSatisfy(\.isHexDigit),
+                  payload.gallery.gid.isValidGID
+            else { return nil }
+            viewerURL = payload.host.url.appending(path: "s/\(key)/\(payload.gallery.gid)-\(page)")
+        }
+
+        guard var components = URLComponents(url: viewerURL, resolvingAgainstBaseURL: false) else { return nil }
+        let skipServerKey = Defaults.URL.Component.Key.skipServerIdentifier.rawValue
+        let query = (components.queryItems ?? []).filter({ $0.name != skipServerKey })
+        components.queryItems = query + [.init(name: skipServerKey, value: "1")]
+        guard let directViewerURL = components.url else { return nil }
+
+        let result = try await GalleryNormalImageURLsRequest(
+            thumbnailURLs: [page: directViewerURL],
+            urlSession: urlSession,
+            allowsCellular: context.options.allowCellular,
+            attempts: 1
+        )
+        .response()
+        guard let imageURL = result.imageURLs[page], imageURL.scheme == "https", imageURL.host() != nil
+        else { return nil }
+        return .init(imageURL: imageURL)
     }
 
     private func attemptResolvedCacheRestore(

@@ -94,9 +94,13 @@ public struct Gallery: Identifiable, Codable, Equatable, Hashable, Sendable {
         return .init(rawValue: rawValue)
     }
     public func tagContents(maximum: Int) -> [GalleryTag.Content] {
-        let tagContents = tags.flatMap(\.contents)
-        guard maximum > 0 else { return tagContents }
-        return .init(tagContents.prefix(min(tagContents.count, maximum)))
+        guard maximum > 0 else { return tags.flatMap(\.contents) }
+        var visibleTags = [GalleryTag.Content]()
+        for tag in tags {
+            visibleTags.append(contentsOf: tag.contents.prefix(maximum - visibleTags.count))
+            if visibleTags.count == maximum { break }
+        }
+        return visibleTags
     }
 
     public var id: String { gid }
@@ -143,6 +147,17 @@ public struct Gallery: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.coverURL = coverURL
         self.galleryURL = galleryURL
         self.lastOpenDate = lastOpenDate
+    }
+}
+
+extension Array where Element == Gallery {
+    /// Appends the first occurrence of each unseen gallery, preserving both pages' order.
+    public mutating func appendUniqueGalleries(contentsOf newGalleries: [Gallery]) {
+        guard !newGalleries.isEmpty else { return }
+        var knownIDs = Set(lazy.map(\.id))
+        for gallery in newGalleries where knownIDs.insert(gallery.id).inserted {
+            append(gallery)
+        }
     }
 }
 

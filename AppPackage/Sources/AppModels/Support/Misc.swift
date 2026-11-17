@@ -111,24 +111,44 @@ public struct PageNumber: Equatable, Sendable {
         current: Int = 0,
         maximum: Int = 0,
         lastItemTimestamp: String? = nil,
-        isNextButtonEnabled: Bool = false
+        isNextButtonEnabled: Bool = false,
+        nextGalleryID: String? = nil
     ) {
         self.current = current
         self.maximum = maximum
         self.lastItemTimestamp = lastItemTimestamp
         self.isNextButtonEnabled = isNextButtonEnabled
+        self.nextGalleryID = nextGalleryID
     }
     public var current = 0
     public var maximum = 0
     public var lastItemTimestamp: String?
     public var isNextButtonEnabled = false
+    public var nextGalleryID: String?
 
     public var isSinglePage: Bool {
         current == 0 && maximum == 0
     }
     public func hasNextPage(isNumericBased: Bool = false) -> Bool {
-        isNumericBased ? current < maximum : isNextButtonEnabled
+        isNumericBased ? current < maximum : isNextButtonEnabled || current < maximum
     }
+
+    public func galleryCursor(lastID: String?) -> String? {
+        guard isNextButtonEnabled else { return nil }
+        return nextGalleryID ?? lastID
+    }
+
+    /// A next link that can't advance the request would fetch the same page again.
+    public mutating func stopIfCursorStalls(after previous: String?, lastID: String?) {
+        let next = galleryCursor(lastID: lastID)
+        if next == nil || next == previous {
+            isNextButtonEnabled = false
+        } else {
+            // Keep the fallback across overlapping pages whose last item was already shown.
+            nextGalleryID = next
+        }
+    }
+
     public mutating func resetPages() {
         self = Self()
     }

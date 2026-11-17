@@ -249,6 +249,102 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
         )
     }
 
+    @Test(arguments: [false, true], [false, true])
+    func pageDownloadFallsBackToTheSiteAfterBothPeersFail(usesMPV: Bool, autoRetry: Bool) async throws {
+        let sessionID = UUID().uuidString
+        let rootURL = FileManager.default.temporaryDirectory.appending(path: sessionID, directoryHint: .isDirectory)
+        defer { removeTemporaryItem(at: rootURL) }
+
+        let viewer = try #require(URL(string: "https://e-hentai.org/s/012345abc0/123456-1"))
+        let peerA = try #require(URL(string: "https://peer-a.hath.network/\(sessionID).gif"))
+        let peerB = try #require(URL(string: "https://peer-b.hath.network/\(sessionID).gif"))
+        let origin = try #require(URL(string: "https://ehgt.org/\(sessionID).gif"))
+        let transfers = LockedBox([URL]())
+        let directDispatchCount = LockedBox(0)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SharedSessionStubURLProtocol.self]
+        configuration.httpAdditionalHeaders = [SharedSessionStubURLProtocol.headerKey: sessionID]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        SharedSessionStubURLProtocol.setHandler(for: sessionID) { request in
+            let url = try #require(request.url)
+            if url.path == viewer.path {
+                let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+                let skip = query?.first(where: { $0.name == "nl" })?.value
+                let imageURL: URL
+                switch skip {
+                case "1":
+                    directDispatchCount.value += 1
+                    imageURL = origin
+                case "peer-token":
+                    imageURL = peerB
+                default:
+                    imageURL = peerA
+                }
+                let html = """
+                    <html><body>
+                    <div id='i3'><img src='\(imageURL.absoluteString)'></div>
+                    <div id='i6'><a id='loadfail' onclick="return nl('peer-token')">Retry</a></div>
+                    </body></html>
+                    """
+                return (try makeResponse(url: url, contentType: "text/html"), Data(html.utf8))
+            }
+            #expect(usesMPV)
+            #expect(url == Defaults.URL.api(host: .ehentai))
+            let imageURL = requestBodyJSONObject(from: request)?["nl"] == nil ? peerA : peerB
+            let data = try JSONSerialization.data(withJSONObject: ["i": imageURL.absoluteString, "s": "peer-token"])
+            return (try makeResponse(url: url, contentType: "application/json"), data)
+        }
+        defer { SharedSessionStubURLProtocol.removeHandler(for: sessionID) }
+
+        let imageBytes = try #require(Data(base64Encoded: "R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs="))
+        let downloader = DownloadPageDownloader { request, _, _ in
+            let url = try #require(request.url)
+            transfers.value.append(url)
+            if url == peerA { throw URLError(.timedOut) }
+            let fileURL = rootURL.appending(path: UUID().uuidString)
+            try imageBytes.write(to: fileURL)
+            let response = try #require(HTTPURLResponse(
+                url: url,
+                statusCode: url == peerB ? 502 : 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "image/gif"]
+            ))
+            return .init(fileURL: fileURL, response: response)
+        }
+        let storage = DownloadStore(rootURL: rootURL, fileManager: .default)
+        try storage.ensureRootDirectory()
+        let manager = DownloadCoordinator(storage: storage, urlSession: session, pageDownloader: downloader)
+        let payload = DownloadRequestPayload(
+            gallery: sampleGallery(),
+            galleryDetail: sampleGalleryDetail(gid: "123456", title: "Sample Gallery"),
+            previewURLs: [:], previewConfig: .normal(rows: 4), host: .ehentai, folderName: "Folder", mode: .initial
+        )
+        let source: DownloadCoordinator.ResolvedSource =
+            usesMPV ? .mpv(key: "mpv-key", imageKeys: [1: "012345abc0"]) : .normal([1: viewer])
+        let context = DownloadCoordinator.PageDownloadContext(
+            payload: payload,
+            options: .init(autoRetryFailedPages: autoRetry),
+            source: source,
+            folderURL: rootURL
+        )
+
+        if autoRetry {
+            let result = try await manager.downloadPage(index: 1, context: context, preferredRelativePath: nil)
+            #expect(result.imageURL == origin)
+            #expect(try Data(contentsOf: rootURL.appending(path: result.relativePath)) == imageBytes)
+            #expect(transfers.value == [peerA, peerB, origin])
+            #expect(directDispatchCount.value == 1)
+        } else {
+            await #expect(throws: AppError.networkingFailed) {
+                try await manager.downloadPage(index: 1, context: context, preferredRelativePath: nil)
+            }
+            #expect(transfers.value == [peerA])
+            #expect(directDispatchCount.value == 0)
+        }
+    }
+
     @Test
     func testMPVImageResolutionFailsOverWithSkipServerTokenOnRetry() async throws {
         let sessionID = UUID().uuidString

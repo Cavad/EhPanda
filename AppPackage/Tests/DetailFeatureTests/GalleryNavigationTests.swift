@@ -13,6 +13,36 @@ struct GalleryNavigationTests {
         postedDate: .distantPast, coverURL: nil, galleryURL: nil
     )
 
+    @Test
+    func openingPreviewsReusesRemoteURLsAndTheConfiguredBatchSize() throws {
+        let url = try #require(URL(string: "https://example.com/preview.jpg"))
+        var gallery = galleryOne
+        gallery.pageCount = 90
+        let screen = GalleryNavigation.nextScreen(for: .detail(.delegate(.pushPreviews(
+            gallery: gallery, previewConfig: .large(rows: 8), language: nil, previewURLs: [1: url]
+        ))))
+        guard case .previews(var state) = screen else {
+            Issue.record("Expected a gallery preview screen.")
+            return
+        }
+        state.visiblePages = [1]
+        #expect(state.previewURLs == [1: url])
+        #expect(state.nextVisiblePreviewBatch == nil)
+
+        // A visible page in the middle of a batch can start that batch.
+        state.visiblePages = [43, 44, 87]
+        #expect(state.nextVisiblePreviewBatch == 1)
+
+        state.failedPreviewBatches = [1]
+        #expect(state.hasFailedVisiblePreviews)
+        #expect(state.nextVisiblePreviewBatch == 2)
+
+        state.visiblePages = [44]
+        state.localPreviewURLs[44] = URL(filePath: "/tmp/preview-44.jpg")
+        #expect(!state.hasFailedVisiblePreviews)
+        #expect(state.nextVisiblePreviewBatch == nil)
+    }
+
     // appendGuardingDuplicate skips only an adjacent identical element, so a rapid double-activation
     // pushes one screen while a legitimate same-gid re-push through a deeper screen still appends.
     @Test
