@@ -4,6 +4,7 @@ import ComposableArchitecture
 import ReadingFeature
 import Resources
 import SFSafeSymbols
+import SFSafeSymbolsExt
 import SwiftUI
 
 struct PreviewsView: View {
