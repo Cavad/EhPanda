@@ -51,7 +51,7 @@ extension Parser {
             return PageNumber()
         }
 
-        let page = currentStr.split(separator: "-").last.flatMap { Int($0) } ?? 1
+        let page = currentStr.split(separator: "-").last.flatMap({ Int($0) }) ?? 1
         let current = max(page, 1) - 1
         var maximum = current
         for aLink in link.xpath(".//a") {
