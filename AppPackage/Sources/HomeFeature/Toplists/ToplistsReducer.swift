@@ -17,7 +17,7 @@ public struct ToplistsReducer: Sendable {
         case performJumpPage
     }
 
-    private enum CancelID {
+    private enum CancelID: Hashable {
         case fetchGalleries
         case fetchMoreGalleries(ToplistsType)
     }

@@ -24,7 +24,7 @@ public struct FavoritesReducer: Sendable {
         case openGalleryDetail(Gallery)
     }
 
-    private enum CancelID {
+    private enum CancelID: Hashable {
         case observeLogin
         case observeDownloads
         case fetchMoreGalleries(Int)
