@@ -5,6 +5,7 @@ import NetworkingFeature
 import OSLogExt
 import ParserFeature
 
+private let logger = Logger(category: .init(describing: DownloadCoordinator.self))
 #if DEBUG && targetEnvironment(simulator)
 private let diagnosisLogger = Logger(category: .init(describing: DownloadCoordinator.self))
 #endif
@@ -93,6 +94,15 @@ extension DownloadCoordinator {
                 try Task.checkCancellation()
                 capturedError = error
                 retryingViewerConnection = attemptedImageURL == nil && error == .networkingFailed
+                let stage = attemptedImageURL == nil ? "viewer" : "image"
+                let failureCode = DownloadFailure(error: error).code.rawValue
+                logger.notice(
+                    """
+                    Download page attempt failed, page: \(index, privacy: .public), \
+                    attempt: \(attempt + 1, privacy: .public), stage: \(stage, privacy: .public), \
+                    code: \(failureCode, privacy: .public)
+                    """
+                )
                 #if DEBUG && targetEnvironment(simulator)
                 if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
                     let stage = attemptedImageURL == nil ? "viewer" : "transfer_or_save"

@@ -415,6 +415,7 @@ public actor DownloadCoordinator {
     public let urlSession: URLSession
     let viewerRetrySession: URLSession
     public let pageDownloader: DownloadPageDownloader
+    let foregroundPageDownloader: DownloadPageDownloader?
     public let backgroundTaskStore: DownloadBackgroundTaskStore
     /// Starts and drives the continued-processing session that keeps a backgrounded queue running.
     ///
@@ -785,6 +786,7 @@ public actor DownloadCoordinator {
         urlSession: URLSession,
         viewerRetrySession: URLSession? = nil,
         pageDownloader: DownloadPageDownloader? = nil,
+        foregroundPageDownloader: DownloadPageDownloader? = nil,
         backgroundTaskStore: DownloadBackgroundTaskStore? = nil,
         backgroundProcessingClient: BackgroundProcessingClient = .noop,
         storedCookiesProvider: @escaping @Sendable (URL) -> [HTTPCookie] = {
@@ -804,6 +806,7 @@ public actor DownloadCoordinator {
         self.urlSession = urlSession
         self.viewerRetrySession = viewerRetrySession ?? urlSession
         self.pageDownloader = pageDownloader ?? .foreground(urlSession: urlSession)
+        self.foregroundPageDownloader = foregroundPageDownloader
         self.backgroundTaskStore = backgroundTaskStore ?? DownloadBackgroundTaskStore(
             fileURL: storage.backgroundTaskRegistryURL()
         )

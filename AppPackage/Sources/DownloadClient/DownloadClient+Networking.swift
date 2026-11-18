@@ -156,7 +156,7 @@ extension DownloadCoordinator {
         // `CancellationError`, so `downloadPage`'s attempts loop retries the page with a fresh
         // failover re-resolution rather than propagating a stop the user never asked for.
         let attemptID = beginPageTransfer(gid: context.gid, pageIndex: context.pageIndex)
-        let pageDownloader = self.pageDownloader
+        let pageDownloader = isSceneInBackground ? self.pageDownloader : foregroundPageDownloader ?? self.pageDownloader
         let attempt = Task { [pageDownloader, weak self] in
             try await pageDownloader.download(request, context) { [weak self] written, expected in
                 Task {

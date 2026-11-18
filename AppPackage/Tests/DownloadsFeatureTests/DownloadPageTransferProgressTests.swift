@@ -322,6 +322,39 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
         #expect(error == .networkingFailed)
     }
 
+    @Test(arguments: [100, 90])
+    func duplicateOrOlderByteCountsDoNotKeepTheLastPageActive(reportedBytes: Int64) async throws {
+        let gallery = Self.makeGallery(gid: "240075")
+        let fixture = try await makeFrozenFixture(
+            gallery: gallery,
+            client: BackgroundProcessingClientSpy().client,
+            pageDownloader: Self.hangingPageDownloader
+        )
+        defer { removeTemporaryItem(at: fixture.context.rootURL) }
+        let manager = fixture.context.manager
+        let page = Self.pageCount
+        let attempt = try await startTransfer(gid: gallery.gid, pageIndex: page, on: manager)
+        defer { attempt.cancel() }
+
+        await manager.testingRecordPageTransferBytes(
+            gid: gallery.gid, pageIndex: page, bytesWritten: 100, bytesExpected: 1000
+        )
+        fixture.advance(by: DownloadCoordinator.pageTransferAbandonThreshold - 1)
+        await manager.testingRecordPageTransferBytes(
+            gid: gallery.gid, pageIndex: page, bytesWritten: reportedBytes, bytesExpected: 1000
+        )
+        await manager.testingSweepStarvedPageTransfers()
+        #expect(await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: page))
+
+        fixture.advance(by: 1)
+        await manager.testingSweepStarvedPageTransfers()
+        let isTransferring = await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: page)
+        #expect(!isTransferring)
+        if !isTransferring {
+            #expect(await transferError(of: attempt) as? AppError == .networkingFailed)
+        }
+    }
+
     /// Every attempt measures its own idle time from its own start, because `beginPageTransfer`
     /// resets the attempt-scoped fields — while the page's earned credit deliberately survives the
     /// re-open, which is what makes a retry the same page continuing.

@@ -33,7 +33,7 @@ jobs:
             -skipMacroValidation \
             -skipPackagePluginValidation \
             -onlyUsePackageVersionsFromResolvedFile \
-            CURRENT_PROJECT_VERSION=166 \
+            CURRENT_PROJECT_VERSION=167 \
             CODE_SIGN_IDENTITY= CODE_SIGN_ENTITLEMENTS= \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             GCC_OPTIMIZATION_LEVEL=s SWIFT_OPTIMIZATION_LEVEL=-O
@@ -44,15 +44,15 @@ jobs:
           version="$(plutil -extract CFBundleShortVersionString raw -o - "$app/Info.plist")"
           build="$(plutil -extract CFBundleVersion raw -o - "$app/Info.plist")"
           [[ "$version" == 3.0.0 ]]
-          [[ "$build" == 166 ]]
+          [[ "$build" == 167 ]]
           output="$RUNNER_TEMP/ipa/EhPanda-$version-build$build.ipa"
           bash actions-tool/package-channel.sh "$app" github "$output"
           unzip -tq "$output"
           test -x "$app/$(plutil -extract CFBundleExecutable raw -o - "$app/Info.plist")"
       - uses: actions/upload-artifact@v7
         with:
-          name: EhPanda-3.0.0-build166-unsigned
-          path: ${{ runner.temp }}/ipa/EhPanda-3.0.0-build166.ipa
+          name: EhPanda-3.0.0-build167-unsigned
+          path: ${{ runner.temp }}/ipa/EhPanda-3.0.0-build167.ipa
           if-no-files-found: error
           retention-days: 7
 
