@@ -18,6 +18,35 @@ extension DownloadCoordinator {
         var didAbortForFatalError = false
     }
 
+    private enum PageDownloadEvent: Sendable {
+        case finished(index: Int, outcome: PageTaskOutcome)
+        case slowPage(Int)
+        case timerCancelled
+    }
+
+    private struct PageDownloadSchedule {
+        var pending: ArraySlice<Int>
+        let workerLimit: Int
+        var activePages = Set<Int>()
+        var slowPages = Set<Int>()
+        var timers = [Int: Task<PageDownloadEvent, Never>]()
+
+        var usesDelayedSecondSlot: Bool { workerLimit == 2 }
+
+        mutating func nextPage() -> Int? {
+            let capacity = usesDelayedSecondSlot && slowPages.isEmpty ? 1 : workerLimit
+            guard activePages.count < capacity, let page = pending.popFirst() else { return nil }
+            activePages.insert(page)
+            return page
+        }
+
+        mutating func finished(_ page: Int) {
+            activePages.remove(page)
+            slowPages.remove(page)
+            timers.removeValue(forKey: page)?.cancel()
+        }
+    }
+
     public func downloadPages(
         context: PageDownloadContext,
         pendingPageIndices: [Int],
@@ -163,97 +192,92 @@ extension DownloadCoordinator {
         progress: inout PageDownloadProgress,
         control: inout PageDownloadControl
     ) async {
-        let payload = context.payload
-        await withTaskGroup(of: PageTaskOutcome.self) { group in
-            var pendingIterator =
-                remainingPageIndices.makeIterator()
-            seedInitialPageTasks(
-                to: &group,
-                iterator: &pendingIterator,
-                context: context,
-                pageCount: remainingPageIndices.count,
-                existingPages: existingPages
+        let gid = context.payload.gallery.gid
+        await withTaskGroup(of: PageDownloadEvent.self) { group in
+            var schedule = PageDownloadSchedule(
+                pending: remainingPageIndices[...],
+                workerLimit: context.options.workerCount
             )
-            while let outcome = await group.next() {
-                guard !control.didAbortForFatalError else {
-                    group.cancelAll()
-                    continue
-                }
-                if control.wasCancelled || Task.isCancelled
-                    || schedulingBlockedGalleryCounts[
-                        payload.gallery.gid
-                    ] != nil {
+            while !control.didAbortForFatalError, !control.wasCancelled {
+                if Task.isCancelled || schedulingBlockedGalleryCounts[gid] != nil {
                     control.wasCancelled = true
-                    group.cancelAll()
+                    break
+                }
+                while let page = schedule.nextPage() {
+                    if schedule.usesDelayedSecondSlot, !schedule.pending.isEmpty {
+                        let timer = Self.slowPageTimer(clock: clock, page: page)
+                        schedule.timers[page] = timer
+                        group.addTask {
+                            await withTaskCancellationHandler {
+                                await timer.value
+                            } onCancel: {
+                                timer.cancel()
+                            }
+                        }
+                    }
+                    let relativePath = existingPages[page]
+                    group.addTask {
+                        let outcome = await self.pageTaskOutcome(
+                            page: page, context: context, preferredRelativePath: relativePath
+                        )
+                        return .finished(index: page, outcome: outcome)
+                    }
+                }
+                guard let event = await group.next() else { break }
+                if Task.isCancelled || schedulingBlockedGalleryCounts[gid] != nil {
+                    control.wasCancelled = true
+                    break
+                }
+                let outcome: PageTaskOutcome
+                switch event {
+                case .finished(let page, let result):
+                    schedule.finished(page)
+                    outcome = result
+                case .slowPage(let page):
+                    if schedule.activePages.contains(page) {
+                        schedule.slowPages.insert(page)
+                    }
+                    continue
+                case .timerCancelled:
                     continue
                 }
-                applyPageTaskOutcome(
-                    outcome,
-                    gid: payload.gallery.gid,
-                    progress: &progress,
-                    control: &control,
-                    group: &group
-                )
-                guard !control.wasCancelled, !control.didAbortForFatalError else { continue }
-                // This cadence flush is opportunistic; a later forced flush persists
-                // accumulated progress, so failure here must not abort page scheduling.
+                applyPageTaskOutcome(outcome, gid: gid, progress: &progress, control: &control)
+                guard !control.wasCancelled, !control.didAbortForFatalError else { break }
+                // A later forced flush persists the progress if this cadence flush fails.
                 do {
                     try await flushDownloadProgress(
-                        context: .init(
-                            gid: payload.gallery.gid,
-                            folderURL: context.folderURL
-                        ),
-                        pendingResolvedPages:
-                            &progress.pendingResolvedPages,
+                        context: .init(gid: gid, folderURL: context.folderURL),
+                        pendingResolvedPages: &progress.pendingResolvedPages,
                         lastFlushDate: &progress.lastFlushDate,
                         force: false
                     )
                 } catch {
                     logger.error("Download progress cadence flush failed: \(error, privacy: .private)")
                 }
-                if let nextIndex = pendingIterator.next() {
-                    addPageDownloadTask(
-                        to: &group,
-                        index: nextIndex,
-                        context: context,
-                        existingPages: existingPages
-                    )
-                }
+            }
+            group.cancelAll()
+        }
+    }
+
+    // Take the deadline when scheduling the page. A quick completion cancels its timer; a
+    // cancellation of the gallery cancels both the page transfer and its timer.
+    private static func slowPageTimer(clock: some Clock<Duration>, page: Int) -> Task<PageDownloadEvent, Never> {
+        let deadline = clock.now.advanced(by: .seconds(20))
+        return Task {
+            do {
+                try await clock.sleep(until: deadline, tolerance: nil)
+                return .slowPage(page)
+            } catch {
+                return .timerCancelled
             }
         }
     }
 
-    private func seedInitialPageTasks(
-        to group: inout TaskGroup<PageTaskOutcome>,
-        iterator: inout IndexingIterator<[Int]>,
-        context: PageDownloadContext,
-        pageCount: Int,
-        existingPages: [Int: String]
-    ) {
-        let workerCount = context.options.workerCount
-        for _ in 0..<min(workerCount, pageCount) {
-            guard let index = iterator.next() else { break }
-            addPageDownloadTask(
-                to: &group,
-                index: index,
-                context: context,
-                existingPages: existingPages
-            )
-        }
-    }
-
-    /// Applies one page's outcome to the run's accumulated progress and control flags.
-    ///
-    /// The two flags travel as the `PageDownloadControl` value they already live in at the call
-    /// site, rather than as two `inout Bool`s: the pair is one decision — how this batch should
-    /// end — and passing them separately is what pushed this signature past the module's parameter
-    /// limit when the gallery identifier joined it.
     private func applyPageTaskOutcome(
         _ outcome: PageTaskOutcome,
         gid: String,
         progress: inout PageDownloadProgress,
-        control: inout PageDownloadControl,
-        group: inout TaskGroup<PageTaskOutcome>
+        control: inout PageDownloadControl
     ) {
         switch outcome {
         case .success(let pageResult):
@@ -264,7 +288,6 @@ extension DownloadCoordinator {
         case .failure(let failure):
             if isCancellationLikeAppError(failure.error) {
                 control.wasCancelled = true
-                group.cancelAll()
                 return
             }
             // The deliberate mover: a page that will not land in this run gives back its sub-page
@@ -272,58 +295,35 @@ extension DownloadCoordinator {
             // failed one, and its credit is retired with the run instead.
             withdrawInFlightPageCredit(gid: gid, pageIndex: failure.index)
             progress.failedPages[failure.index] = failure
-            if isFatalAccountAppError(failure.error) {
-                control.didAbortForFatalError = true
-                group.cancelAll()
-            }
+            control.didAbortForFatalError = isFatalAccountAppError(failure.error)
 
         case .cancelled:
-            guard !control.didAbortForFatalError else { return }
             control.wasCancelled = true
-            group.cancelAll()
         }
     }
 
-    private func addPageDownloadTask(
-        to group: inout TaskGroup<PageTaskOutcome>,
-        index page: Int,
+    private func pageTaskOutcome(
+        page: Int,
         context: PageDownloadContext,
-        existingPages: [Int: String]
-    ) {
-        group.addTask {
-            do {
-                return .success(
-                    try await self.downloadPage(
-                        index: page,
-                        context: context,
-                        preferredRelativePath:
-                            existingPages[page]
-                    )
+        preferredRelativePath: String?
+    ) async -> PageTaskOutcome {
+        do {
+            return .success(
+                try await downloadPage(
+                    index: page, context: context, preferredRelativePath: preferredRelativePath
                 )
-            } catch is CancellationError {
+            )
+        } catch is CancellationError {
+            return .cancelled
+        } catch let error as AppError {
+            return .failure(.init(index: page, relativePath: preferredRelativePath, error: error))
+        } catch {
+            if Self.isCancellationLikeError(error) {
                 return .cancelled
-            } catch let error as AppError {
-                return .failure(
-                    .init(
-                        index: page,
-                        relativePath: existingPages[page],
-                        error: error
-                    )
-                )
-            } catch {
-                if Self.isCancellationLikeError(error) {
-                    return .cancelled
-                }
-                return .failure(
-                    .init(
-                        index: page,
-                        relativePath: existingPages[page],
-                        error: .fileOperationFailed(
-                            error.localizedDescription
-                        )
-                    )
-                )
             }
+            return .failure(.init(
+                index: page, relativePath: preferredRelativePath, error: .fileOperationFailed(error.localizedDescription)
+            ))
         }
     }
 

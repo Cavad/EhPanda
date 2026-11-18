@@ -1,12 +1,108 @@
 @testable import AppFeature
 import AppModels
 import AppTools
+import ComposableArchitecture
 import DownloadClient
 import Foundation
 import Testing
 import TestingSupport
 
 struct DownloadImageParsingTests: DownloadFeatureTestCase {
+    @Test
+    func defaultDownloadStartsASecondPageOnlyWhileAnotherPageIsSlow() async throws {
+        let sessionID = UUID().uuidString
+        let rootURL = FileManager.default.temporaryDirectory.appending(path: sessionID, directoryHint: .isDirectory)
+        defer { removeTemporaryItem(at: rootURL) }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SharedSessionStubURLProtocol.self]
+        configuration.httpAdditionalHeaders = [SharedSessionStubURLProtocol.headerKey: sessionID]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        SharedSessionStubURLProtocol.setHandler(for: sessionID) { request in
+            let url = try #require(request.url)
+            let imageURL = "https://example.com/\(sessionID)/\(url.lastPathComponent).gif"
+            let html = "<html><body><div id='i3'><img src='\(imageURL)'></div></body></html>"
+            return (try makeResponse(url: url, contentType: "text/html"), Data(html.utf8))
+        }
+        defer { SharedSessionStubURLProtocol.removeHandler(for: sessionID) }
+
+        let first = AsyncStream<Void>.makeStream()
+        let second = AsyncStream<Void>.makeStream()
+        defer {
+            first.continuation.finish()
+            second.continuation.finish()
+        }
+        let started = LockedBox(Set<Int>())
+        let clock = TestClock()
+        let wallDate = Date().addingTimeInterval(10)
+        let image = try #require(Data(base64Encoded: "R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs="))
+        let downloader = DownloadPageDownloader { request, context, _ in
+            started.value.insert(context.pageIndex)
+            if context.pageIndex == 1 {
+                for await _ in first.stream {}
+            } else if context.pageIndex == 2 {
+                for await _ in second.stream {}
+            }
+            try Task.checkCancellation()
+            let url = try #require(request.url)
+            let response = try makeResponse(url: url, contentType: "image/gif")
+            let fileURL = rootURL.appending(path: UUID().uuidString)
+            try image.write(to: fileURL)
+            return .init(fileURL: fileURL, response: response)
+        }
+        let gallery = sampleGallery()
+        let storage = DownloadStore(rootURL: rootURL, fileManager: .default)
+        let manager = DownloadCoordinator(
+            storage: storage, urlSession: session, pageDownloader: downloader,
+            now: { wallDate }, clock: clock
+        )
+        let payload = DownloadRequestPayload(
+            gallery: gallery,
+            galleryDetail: sampleGalleryDetail(gid: gallery.gid, title: gallery.title),
+            previewURLs: [:], previewConfig: .normal(rows: 4), host: .ehentai, folderName: "Folder", mode: .initial
+        )
+        let folderURL = storage.folderURL(relativePath: "Folder/[\(gallery.gid)_token] Sample")
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        let manifest = try sampleManifest(gid: gallery.gid, title: gallery.title, pageCount: 3)
+        try storage.writeManifest(manifest, folderURL: folderURL)
+        let thumbnails = try Dictionary(uniqueKeysWithValues: (1...3).map { page in
+            (page, try #require(URL(string: "https://e-hentai.org/s/test/\(gallery.gid)-\(page)")))
+        })
+        let operation = Task {
+            try await manager.downloadPages(
+                context: .init(payload: payload, options: .init(), source: .normal(thumbnails), folderURL: folderURL),
+                pendingPageIndices: [1, 2, 3], existingManifest: manifest, existingPageRelativePaths: [:]
+            )
+        }
+        defer { operation.cancel() }
+
+        try await waitUntil({ started.value.contains(1) })
+        await clock.advance(by: .seconds(19))
+        #expect(started.value == [1])
+        await clock.advance(by: .seconds(1))
+        try await waitUntil({ started.value.contains(2) })
+        #expect(started.value == [1, 2])
+
+        first.continuation.finish()
+        try await waitUntil {
+            do {
+                return try storage.readManifest(folderURL: folderURL).pages[1]?.isEmpty == false
+            } catch {
+                return false
+            }
+        }
+        await clock.advance(by: .seconds(19))
+        #expect(started.value == [1, 2])
+        await clock.advance(by: .seconds(1))
+        try await waitUntil({ started.value.contains(3) })
+
+        second.continuation.finish()
+        let result = try await operation.value
+        #expect(result.failedPages.isEmpty)
+        #expect(result.pages.map(\.index).sorted() == [1, 2, 3])
+    }
+
     @Test
     func testFileBasedLimitImageMapsToImageLimitReached() async throws {
         let fileURL = try writeFixtureToTemporaryFile(filename: .bandwidthExceeded)
