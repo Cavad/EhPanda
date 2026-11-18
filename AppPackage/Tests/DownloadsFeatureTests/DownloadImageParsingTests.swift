@@ -347,9 +347,16 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
         )
     }
 
-    @Test(arguments: [false, true], [false, true])
-    func pageDownloadFallsBackToTheSiteAfterBothPeersFail(usesMPV: Bool, autoRetry: Bool) async throws {
+    enum ImageRetryScenario: CaseIterable {
+        case disabled
+        case bothPeersFail
+        case viewerReloadTimesOut
+    }
+
+    @Test(arguments: [false, true], ImageRetryScenario.allCases)
+    func pageDownloadRetriesViewerAndImageFailures(usesMPV: Bool, scenario: ImageRetryScenario) async throws {
         let sessionID = UUID().uuidString
+        let recoveryID = UUID().uuidString
         let rootURL = FileManager.default.temporaryDirectory.appending(path: sessionID, directoryHint: .isDirectory)
         defer { removeTemporaryItem(at: rootURL) }
 
@@ -364,14 +371,33 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
         configuration.protocolClasses = [SharedSessionStubURLProtocol.self]
         configuration.httpAdditionalHeaders = [SharedSessionStubURLProtocol.headerKey: sessionID]
         let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-        SharedSessionStubURLProtocol.setHandler(for: sessionID) { request in
+        configuration.httpAdditionalHeaders = [SharedSessionStubURLProtocol.headerKey: recoveryID]
+        let recoverySession = URLSession(configuration: configuration)
+        defer {
+            session.invalidateAndCancel()
+            recoverySession.invalidateAndCancel()
+        }
+        let respond: @Sendable (URLRequest) throws -> (HTTPURLResponse, Data) = { request in
             let url = try #require(request.url)
+            let onRecoverySession = request.value(forHTTPHeaderField: SharedSessionStubURLProtocol.headerKey)
+                == recoveryID
+            #expect(request.timeoutInterval == (onRecoverySession ? 30 : 20))
+            let isNormalViewer = url.path == viewer.path
+            let skip = if isNormalViewer {
+                URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first(where: { $0.name == "nl" })?.value
+            } else {
+                requestBodyJSONObject(from: request)?["nl"] as? String
+            }
+            dispatches.value.append(skip)
+            if scenario == .viewerReloadTimesOut && skip == "peer-token" && !onRecoverySession {
+                throw URLError(.timedOut)
+            }
+            if scenario == .viewerReloadTimesOut && dispatches.value.count == 3 {
+                #expect(onRecoverySession)
+            }
             if url.path == viewer.path {
-                let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
-                let skip = query?.first(where: { $0.name == "nl" })?.value
                 #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
-                dispatches.value.append(skip)
                 let imageURL: URL
                 switch skip {
                 case "1":
@@ -391,13 +417,16 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
             }
             #expect(usesMPV)
             #expect(url == Defaults.URL.api(host: .ehentai))
-            let skip = requestBodyJSONObject(from: request)?["nl"] as? String
-            dispatches.value.append(skip)
             let imageURL = skip == nil ? peerA : peerB
             let data = try JSONSerialization.data(withJSONObject: ["i": imageURL.absoluteString, "s": "peer-token"])
             return (try makeResponse(url: url, contentType: "application/json"), data)
         }
-        defer { SharedSessionStubURLProtocol.removeHandler(for: sessionID) }
+        SharedSessionStubURLProtocol.setHandler(for: sessionID, handler: respond)
+        SharedSessionStubURLProtocol.setHandler(for: recoveryID, handler: respond)
+        defer {
+            SharedSessionStubURLProtocol.removeHandler(for: sessionID)
+            SharedSessionStubURLProtocol.removeHandler(for: recoveryID)
+        }
 
         let imageBytes = try #require(Data(base64Encoded: "R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs="))
         let downloader = DownloadPageDownloader { request, _, _ in
@@ -408,7 +437,7 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
             try imageBytes.write(to: fileURL)
             let response = try #require(HTTPURLResponse(
                 url: url,
-                statusCode: url == peerB ? 502 : 200,
+                statusCode: url == peerB && scenario == .bothPeersFail ? 502 : 200,
                 httpVersion: nil,
                 headerFields: ["Content-Type": "image/gif"]
             ))
@@ -416,7 +445,9 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
         }
         let storage = DownloadStore(rootURL: rootURL, fileManager: .default)
         try storage.ensureRootDirectory()
-        let manager = DownloadCoordinator(storage: storage, urlSession: session, pageDownloader: downloader)
+        let manager = DownloadCoordinator(
+            storage: storage, urlSession: session, viewerRetrySession: recoverySession, pageDownloader: downloader
+        )
         let payload = DownloadRequestPayload(
             gallery: sampleGallery(),
             galleryDetail: sampleGalleryDetail(gid: "123456", title: "Sample Gallery"),
@@ -426,18 +457,24 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
             usesMPV ? .mpv(key: "mpv-key", imageKeys: [1: "012345abc0"]) : .normal([1: viewer])
         let context = DownloadCoordinator.PageDownloadContext(
             payload: payload,
-            options: .init(autoRetryFailedPages: autoRetry),
+            options: .init(autoRetryFailedPages: scenario != .disabled),
             source: source,
             folderURL: rootURL
         )
 
-        if autoRetry {
+        switch scenario {
+        case .bothPeersFail:
             let result = try await manager.downloadPage(index: 1, context: context, preferredRelativePath: nil)
             #expect(result.imageURL == origin)
             #expect(try Data(contentsOf: rootURL.appending(path: result.relativePath)) == imageBytes)
             #expect(transfers.value == [peerA, peerB, origin])
             #expect(dispatches.value == [nil, "peer-token", nil, "1"])
-        } else {
+        case .viewerReloadTimesOut:
+            let result = try await manager.downloadPage(index: 1, context: context, preferredRelativePath: nil)
+            #expect(result.imageURL == peerB)
+            #expect(transfers.value == [peerA, peerB])
+            #expect(dispatches.value == [nil, "peer-token", "peer-token"])
+        case .disabled:
             await #expect(throws: AppError.networkingFailed) {
                 try await manager.downloadPage(index: 1, context: context, preferredRelativePath: nil)
             }

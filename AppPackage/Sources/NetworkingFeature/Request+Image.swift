@@ -100,11 +100,15 @@ public struct GalleryNormalImageRequest: Request, Sendable {
     public let pageURL: URL
     public let urlSession: URLSession
     public var reloadsImageLink = false
+    public var timeoutInterval: TimeInterval?
     private let allowsCellular: Bool
     private let attempts: Int
 
     public func response() async throws(AppError) -> Parser.GalleryNormalImageInfo {
         var request = urlRequest(url: pageURL, allowsCellular: allowsCellular)
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         if reloadsImageLink {
             // HTML can outlive its signed image URL in URLCache. Keep the response's reload token
             // paired with the same image URL so an unreachable peer can be skipped directly.
@@ -328,6 +332,8 @@ public struct GalleryMPVImageURLRequest: Request {
     public var urlSession: URLSession = .shared
     public var allowsCellular = true
     public var requiresSkipServerIdentifier = true
+    public var timeoutInterval: TimeInterval?
+    public var attempts = 4
 
     public func response() async throws(AppError) -> GalleryMPVImageURLResponse {
         var params: [String: Any] = [
@@ -345,10 +351,13 @@ public struct GalleryMPVImageURLRequest: Request {
             url: apiURL ?? Defaults.URL.api(host: host),
             allowsCellular: allowsCellular
         )
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         request.httpMethod = "POST"
         request.httpBody = try encodeJSONObject(params)
 
-        let (data, _) = try await fetch(request, in: urlSession)
+        let (data, _) = try await fetch(request, in: urlSession, attempts: attempts)
         do {
             return try parseResponse(data: data) {
                 guard

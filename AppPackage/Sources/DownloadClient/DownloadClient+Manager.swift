@@ -413,6 +413,7 @@ public actor DownloadCoordinator {
 
     public let storage: DownloadStore
     public let urlSession: URLSession
+    let viewerRetrySession: URLSession
     public let pageDownloader: DownloadPageDownloader
     public let backgroundTaskStore: DownloadBackgroundTaskStore
     /// Starts and drives the continued-processing session that keeps a backgrounded queue running.
@@ -782,6 +783,7 @@ public actor DownloadCoordinator {
     public init(
         storage: DownloadStore,
         urlSession: URLSession,
+        viewerRetrySession: URLSession? = nil,
         pageDownloader: DownloadPageDownloader? = nil,
         backgroundTaskStore: DownloadBackgroundTaskStore? = nil,
         backgroundProcessingClient: BackgroundProcessingClient = .noop,
@@ -800,6 +802,7 @@ public actor DownloadCoordinator {
     ) {
         self.storage = storage
         self.urlSession = urlSession
+        self.viewerRetrySession = viewerRetrySession ?? urlSession
         self.pageDownloader = pageDownloader ?? .foreground(urlSession: urlSession)
         self.backgroundTaskStore = backgroundTaskStore ?? DownloadBackgroundTaskStore(
             fileURL: storage.backgroundTaskRegistryURL()

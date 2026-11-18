@@ -86,9 +86,18 @@ extension DownloadClient {
                 )
             }
         )
+        let viewerRetrySession: URLSession
+        if urlSession === URLSession.shared {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.httpCookieStorage = .shared
+            viewerRetrySession = URLSession(configuration: configuration)
+        } else {
+            viewerRetrySession = urlSession
+        }
         let manager = DownloadCoordinator(
             storage: storage,
             urlSession: urlSession,
+            viewerRetrySession: viewerRetrySession,
             pageDownloader: pageDownloader,
             backgroundTaskStore: backgroundTaskStore,
             backgroundProcessingClient: .live,

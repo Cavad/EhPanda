@@ -771,8 +771,11 @@ extension DownloadCoordinator {
         payload: DownloadRequestPayload,
         options: DownloadRequestOptions,
         source: ResolvedSource,
-        failover: ResolvedImageSource? = nil
+        failover: ResolvedImageSource? = nil,
+        retryingViewerConnection: Bool = false
     ) async throws -> ResolvedImageSource {
+        let session = retryingViewerConnection ? viewerRetrySession : urlSession
+        let timeout: TimeInterval = retryingViewerConnection ? 30 : 20
         switch source {
         case .normal(let thumbnailURLs):
             guard let thumbnailURL = thumbnailURLs[page] else {
@@ -780,9 +783,10 @@ extension DownloadCoordinator {
             }
             let pageURL = imageViewerURL(thumbnailURL, skipServerIdentifier: failover?.skipServerIdentifier)
             var request = GalleryNormalImageRequest(
-                index: page, pageURL: pageURL, urlSession: urlSession,
+                index: page, pageURL: pageURL, urlSession: session,
                 allowsCellular: options.allowCellular, attempts: 1
             )
+            request.timeoutInterval = timeout
             request.reloadsImageLink = true
             let dispatch = try await request.response()
             return .init(imageURL: dispatch.imageURL, skipServerIdentifier: dispatch.skipServerIdentifier)
@@ -794,18 +798,20 @@ extension DownloadCoordinator {
             guard let imageKey = imageKeys[page] else {
                 throw AppError.notFound
             }
-            let response = try await GalleryMPVImageURLRequest(
+            var request = GalleryMPVImageURLRequest(
                 host: payload.host,
                 gid: gid,
                 index: page,
                 mpvKey: mpvKey,
                 mpvImageKey: imageKey,
                 skipServerIdentifier: failover?.skipServerIdentifier,
-                urlSession: urlSession,
+                urlSession: session,
                 allowsCellular: options.allowCellular,
                 requiresSkipServerIdentifier: false
             )
-            .response()
+            request.timeoutInterval = timeout
+            request.attempts = 1
+            let response = try await request.response()
             return .init(
                 imageURL: response.imageURL,
                 skipServerIdentifier: response.skipServerIdentifier.isEmpty ? nil : response.skipServerIdentifier
