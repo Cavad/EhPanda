@@ -51,7 +51,8 @@ struct DownloadDiagnosisLogin: UIViewRepresentable {
     }
 
     private func importSession(_ cookies: [HTTPCookie]) -> Bool {
-        let siteCookies = cookies.filter({ [".e-hentai.org", "e-hentai.org", "forums.e-hentai.org"].contains($0.domain) })
+        let forumDomains = [".e-hentai.org", "e-hentai.org", "forums.e-hentai.org"]
+        let siteCookies = cookies.filter({ forumDomains.contains($0.domain) })
         guard let memberID = siteCookies.first(where: { $0.name == Defaults.Cookie.ipbMemberId })?.value,
               let passHash = siteCookies.first(where: { $0.name == Defaults.Cookie.ipbPassHash })?.value,
               !memberID.isEmpty, !passHash.isEmpty, memberID != "0", passHash != "0"
