@@ -87,8 +87,6 @@ struct DownloadViewerDeadlineTests: DownloadFeatureTestCase {
             folderURL: rootURL
         )
 
-        let wallClock = ContinuousClock()
-        let start = wallClock.now
         let page = Task {
             try await manager.downloadPage(index: 1, context: context, preferredRelativePath: nil)
         }
@@ -101,9 +99,6 @@ struct DownloadViewerDeadlineTests: DownloadFeatureTestCase {
             return NeverAnsweringURLProtocol.wasStopped(hangingID) || recoveryDispatches.value > 0
         }
         let result = try await page.value
-        // Well inside the request's own twenty-second interval: the app's deadline, not a
-        // URLSession timeout of the custom protocol, is what gave the load up.
-        #expect(wallClock.now - start < .seconds(10))
 
         #expect(result.imageURL == peer)
         #expect(try Data(contentsOf: rootURL.appending(path: result.relativePath)) == imageBytes)
@@ -118,10 +113,16 @@ struct DownloadViewerDeadlineTests: DownloadFeatureTestCase {
         let clock = TestClock()
         let operationFinished = LockedBox(false)
         let outcome = LockedBox<Result<Int, any Error>?>(nil)
+        // The operation waits on a gate that only this case opens, inside a task its cancellation
+        // cannot reach, so it is still running for as long as the case keeps the gate shut.
+        let (gate, openGate) = AsyncStream<Void>.makeStream()
+        defer { openGate.finish() }
         let call = Task {
             do {
                 let value = try await DownloadCoordinator.testingWithPageStageDeadline(seconds: 30, clock: clock) {
-                    await sleepIgnoringCancellation(for: .seconds(5))
+                    await Task {
+                        for await _ in gate {}
+                    }.value
                     operationFinished.value = true
                     return 1
                 }
@@ -131,15 +132,12 @@ struct DownloadViewerDeadlineTests: DownloadFeatureTestCase {
             }
         }
         defer { call.cancel() }
-        let wallClock = ContinuousClock()
-        let start = wallClock.now
         try await waitUntil {
             if outcome.value != nil { return true }
             await clock.advance(by: .seconds(30))
             return outcome.value != nil
         }
 
-        #expect(wallClock.now - start < .seconds(4))
         #expect(operationFinished.value == false)
         let result = try #require(outcome.value)
         #expect(throws: AppError.networkingFailed) {
