@@ -377,7 +377,7 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
             session.invalidateAndCancel()
             recoverySession.invalidateAndCancel()
         }
-        let respond: @Sendable (URLRequest) throws -> (HTTPURLResponse, Data) = { request in
+        let respond: @Sendable (URLRequest) throws -> (response: HTTPURLResponse, data: Data) = { request in
             let url = try #require(request.url)
             let onRecoverySession = request.value(forHTTPHeaderField: SharedSessionStubURLProtocol.headerKey)
                 == recoveryID
