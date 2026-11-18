@@ -322,7 +322,8 @@ extension DownloadCoordinator {
                 return .cancelled
             }
             return .failure(.init(
-                index: page, relativePath: preferredRelativePath, error: .fileOperationFailed(error.localizedDescription)
+                index: page, relativePath: preferredRelativePath,
+                error: .fileOperationFailed(error.localizedDescription)
             ))
         }
     }
