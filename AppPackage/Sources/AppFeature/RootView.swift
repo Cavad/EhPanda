@@ -27,7 +27,9 @@ public struct RootView: View {
             .captureDiagnostics(store: appDelegate.store)
             #if DEBUG && targetEnvironment(simulator)
             .overlay {
-                if let credentials = appDelegate.diagnosisCredentials, !didResolveDiagnosisLogin {
+                if ProcessInfo.processInfo.environment["EHPANDA_DIAG_BROWSER"] == "1" {
+                    DownloadDiagnosisBrowserProbe()
+                } else if let credentials = appDelegate.diagnosisCredentials, !didResolveDiagnosisLogin {
                     DownloadDiagnosisLogin(username: credentials.username, password: credentials.password) { signedIn in
                         didResolveDiagnosisLogin = true
                         if signedIn {

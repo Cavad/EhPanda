@@ -31,6 +31,35 @@ def page_counts(data, gid):
     return 0, 0, []
 
 
+def run_browser_probe(device, bundle, output, login):
+    log_path = output / "exhentai-browser.log"
+    events = []
+    with log_path.open("w") as log_output, log_path.open() as log:
+        monitor = subprocess.Popen([
+            "xcrun", "simctl", "spawn", device, "log", "stream", "--level", "info", "--style", "compact",
+            "--predicate", 'eventMessage BEGINSWITH "DL_DIAG browser"',
+        ], stdout=log_output, stderr=subprocess.STDOUT)
+        try:
+            time.sleep(2)
+            environment = os.environ | login | {
+                "SIMCTL_CHILD_EHPANDA_DOWNLOAD_DIAGNOSIS": "1",
+                "SIMCTL_CHILD_EHPANDA_DIAG_BROWSER": "1",
+            }
+            simctl("launch", "--terminate-running-process", device, bundle, env=environment, capture_output=True)
+            deadline = time.monotonic() + 240
+            while time.monotonic() < deadline:
+                time.sleep(2)
+                events.extend(re.findall(r"DL_DIAG (browser[^\r\n]+)\n", log.read()))
+                if any(event.startswith("browser_done ") for event in events) or monitor.poll() is not None:
+                    break
+        finally:
+            monitor.terminate()
+            monitor.wait(timeout=15)
+    for event in events:
+        print(event, flush=True)
+    (output / "exhentai-browser.json").write_text(json.dumps({"events": events}, indent=2) + "\n")
+
+
 def run_gallery(device, bundle, data, output, host, gallery, expected_count, login):
     gid = gallery.split("/")[0]
     url = f"https://{host}.org/g/{gallery}/"
@@ -115,6 +144,7 @@ def main():
     for host in ("exhentai",):
         simctl("install", udid, str(app))
         data = Path(simctl("get_app_container", udid, bundle, "data", capture_output=True).stdout.strip())
+        run_browser_probe(udid, bundle, output, login)
         for expected, gallery in GALLERIES:
             report = run_gallery(udid, bundle, data, output, host, gallery, expected, login)
             if any(event.startswith("login_failed ") or "code=quotaExceeded" in event or "code=ipBanned" in event
