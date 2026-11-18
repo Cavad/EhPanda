@@ -7,9 +7,16 @@ import ComposableArchitecture
 import DetailFeature
 import HapticsClient
 import NetworkingFeature
+#if DEBUG && targetEnvironment(simulator)
+import OSLog
+#endif
 import Sharing
 import SwiftUI
 import UserDefaultsClient
+
+#if DEBUG && targetEnvironment(simulator)
+private let diagnosisLogger = Logger(subsystem: "app.ehpanda.diagnosis", category: "link")
+#endif
 
 @Reducer
 struct PresentationFeature {
@@ -241,6 +248,12 @@ struct PresentationFeature {
                     }
                     return .send(.handleGalleryLink(url: url, gallery: gallery))
                 case .failure(let error):
+                    #if DEBUG && targetEnvironment(simulator)
+                    if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+                        let code = DownloadFailure(error: error).code.rawValue
+                        diagnosisLogger.notice("DL_DIAG detail_failed stage=link code=\(code, privacy: .public)")
+                    }
+                    #endif
                     let context = Context.galleryFailure(
                         url: url,
                         action: String(localized: .loadGallery),

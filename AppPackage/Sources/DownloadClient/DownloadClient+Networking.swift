@@ -193,7 +193,9 @@ extension DownloadCoordinator {
             if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
                 let nsError = error as NSError
                 let isURL = nsError.domain == NSURLErrorDomain
-                logger.notice("DL_DIAG transfer_error page=\(context.pageIndex) url_error=\(isURL) code=\(nsError.code)")
+                logger.notice(
+                    "DL_DIAG transfer_error page=\(context.pageIndex) url_error=\(isURL) code=\(nsError.code)"
+                )
             }
             #endif
             // A pause or group cancellation cancels this parent task. A URLSession or watchdog

@@ -48,11 +48,12 @@ def run_gallery(device, bundle, data, output, host, gallery, expected_count):
     began = time.monotonic()
     events = []
     last_counts = None
-    with (output / f"{label}.log").open("w+") as log:
+    log_path = output / f"{label}.log"
+    with log_path.open("w") as log_output, log_path.open() as log:
         monitor = subprocess.Popen([
             "xcrun", "simctl", "spawn", device, "log", "stream", "--level", "info", "--style", "compact",
             "--predicate", 'eventMessage BEGINSWITH "DL_DIAG "',
-        ], stdout=log, stderr=subprocess.STDOUT)
+        ], stdout=log_output, stderr=subprocess.STDOUT)
         offset = 0
         try:
             time.sleep(2)

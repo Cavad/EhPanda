@@ -68,7 +68,9 @@ extension DownloadCoordinator {
                 if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
                     let port = resolved.imageURL.port ?? 443
                     let peer = resolved.imageURL.host()?.hasSuffix(".hath.network") ?? false
-                    diagnosisLogger.notice("DL_DIAG resolved page=\(index) attempt=\(attempt) port=\(port) peer=\(peer)")
+                    diagnosisLogger.notice(
+                        "DL_DIAG resolved page=\(index) attempt=\(attempt) port=\(port) peer=\(peer)"
+                    )
                 }
                 #endif
                 return try await downloadAndSavePage(

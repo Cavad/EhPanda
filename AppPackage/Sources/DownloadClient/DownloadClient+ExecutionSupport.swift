@@ -232,7 +232,7 @@ extension DownloadCoordinator {
         }
         #if DEBUG && targetEnvironment(simulator)
         if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
-            let missing = requiredPageIndices.filter { thumbnailURLs[$0] == nil }
+            let missing = requiredPageIndices.filter({ thumbnailURLs[$0] == nil })
             let missingIndices = missing.map(String.init).joined(separator: ",")
             logger.notice(
                 """
