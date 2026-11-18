@@ -29,13 +29,16 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone Air,OS=27.0' \
             -resultBundlePath "$result" \
             -skipMacroValidation -skipPackagePluginValidation -onlyUsePackageVersionsFromResolvedFile \
-            -only-testing:DownloadsFeatureTests/DownloadPageTransferProgressTests/duplicateOrOlderByteCountsDoNotKeepTheLastPageActive \
+            -only-testing:DownloadsFeatureTests/DownloadPageTransferProgressTests \
             > "$log" 2>&1; then
             tail -100 "$log"
             exit 1
           fi
-          if ! grep -E 'Expectation failed:.*isTransferring' "$log"; then
-            tail -100 "$log"
-            exit 1
-          fi
-          xcrun xcresulttool get test-results summary --path "$result"
+          summary=$(xcrun xcresulttool get test-results summary --path "$result")
+          jq -e '
+            (.testFailures | length > 0) and
+            all(.testFailures[];
+                (.testIdentifierString | contains("duplicateOrOlderByteCountsDoNotKeepTheLastPageActive")) and
+                (.failureText | contains("networkingFailed")))
+          ' <<< "$summary"
+          jq . <<< "$summary"
