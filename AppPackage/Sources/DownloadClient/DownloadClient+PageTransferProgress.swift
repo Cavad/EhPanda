@@ -39,11 +39,22 @@ struct InFlightPageTransfer: Sendable {
     /// discriminates the "background-created transfers are discretionary" hypothesis.
     var startedInBackground: Bool
     var firstByteDate: Date?
-    /// When bytes last arrived for the CURRENT attempt, and the basis of the abandon rule: idle
-    /// time is measured from here, so a transfer that is slow but MOVING is never abandoned however
-    /// long it runs. Nil until the first byte, where the attempt's start stands in for it.
+    /// When bytes last arrived for the CURRENT attempt, and the basis of the idle rule. Nil until
+    /// the first byte, where the attempt's start stands in for it.
     var lastByteDate: Date?
     var bytesWritten: Int64 = 0
+    /// The size the server announced, or a non-positive value when it announced none.
+    var bytesExpected: Int64 = 0
+    /// The start of the current throughput window and the byte count at that moment. The window
+    /// opens at the first byte, so time to first byte never counts against throughput, and it rolls
+    /// forward each time a full window passes above the floor.
+    var throughputWindowStartDate: Date?
+    var throughputWindowStartBytes: Int64 = 0
+    /// The image server's port, for the progress log. Peers on ports other than 443 are the ones a
+    /// device trace has shown failing most often.
+    var peerPort: Int?
+    /// When this attempt last wrote its progress line.
+    var lastProgressLogDate: Date?
     var isTransferring: Bool
     /// Whether this attempt has already been reported as starved, so the heartbeat's repeated
     /// sweeps report it once rather than every ten seconds.
@@ -62,10 +73,78 @@ struct InFlightPageTransfer: Sendable {
     /// it started when no byte has arrived at all.
     ///
     /// ONE definition, applied by the sweep to both thresholds, so the ten-second log and the
-    /// sixty-second abandonment can never disagree about what "without bytes" means.
+    /// idle abandonment can never disagree about what "without bytes" means.
     func idleInterval(at date: Date) -> TimeInterval {
         date.timeIntervalSince(lastByteDate ?? startDate)
     }
+
+    /// Why this attempt should be given up at `date`, or nil while it may continue.
+    ///
+    /// ONE decision, shared by the attempt's own watchdog and the heartbeat's sweep, so the two can
+    /// never disagree. It rolls the throughput window forward when a full window passed above the
+    /// floor, which is why it is `mutating`; callers write the entry back.
+    ///
+    /// An attempt created in the background keeps the original rule, sixty seconds without bytes,
+    /// because the system may defer such a transfer and cancelling it only re-queues it.
+    mutating func abandonReason(at date: Date) -> PageTransferAbandonReason? {
+        guard !startedInBackground else {
+            let idle = idleInterval(at: date)
+            return idle >= DownloadCoordinator.backgroundPageTransferAbandonThreshold ? .idle : nil
+        }
+        guard firstByteDate != nil else {
+            let elapsed = date.timeIntervalSince(startDate)
+            return elapsed >= DownloadCoordinator.pageTransferFirstByteDeadline ? .noFirstByte : nil
+        }
+        if idleInterval(at: date) >= DownloadCoordinator.pageTransferAbandonThreshold {
+            return .idle
+        }
+        let windowStartDate = throughputWindowStartDate ?? startDate
+        let window = date.timeIntervalSince(windowStartDate)
+        guard window >= DownloadCoordinator.pageTransferThroughputWindow else { return nil }
+        let throughput = Double(bytesWritten - throughputWindowStartBytes) / window
+        guard throughput >= DownloadCoordinator.pageTransferMinimumThroughput else {
+            return .belowThroughputFloor
+        }
+        throughputWindowStartDate = date
+        throughputWindowStartBytes = bytesWritten
+        return nil
+    }
+}
+
+/// The rule an abandoned page attempt broke, named in the device log.
+enum PageTransferAbandonReason: String, Sendable {
+    /// A foreground attempt received no byte within `pageTransferFirstByteDeadline`.
+    case noFirstByte = "no first byte"
+    /// The attempt went silent for its idle bound.
+    case idle
+    /// A moving foreground attempt stayed under `pageTransferMinimumThroughput` for a full window.
+    case belowThroughputFloor = "below throughput floor"
+}
+
+// MARK: - Abandonment Rule
+extension DownloadCoordinator {
+    /// How long a foreground attempt may wait for its first byte before it is abandoned and the
+    /// page moves to another image server. A healthy server answers within a few seconds; a peer
+    /// that drops the connection would otherwise hold the page for the whole idle bound.
+    public static let pageTransferFirstByteDeadline: TimeInterval = 20
+    /// The idle bound for an attempt created while the app was in the background: the original
+    /// G-15-2I value, kept because the system may defer a background transfer.
+    public static let backgroundPageTransferAbandonThreshold: TimeInterval = 60
+    /// The window over which a moving foreground transfer's throughput is measured.
+    public static let pageTransferThroughputWindow: TimeInterval = 45
+    /// The slowest throughput, in bytes per second over `pageTransferThroughputWindow`, that a
+    /// moving foreground transfer may sustain before the page moves to another image server.
+    ///
+    /// A trickle of a few bytes at a time never trips the idle bound, so before this floor one
+    /// throttled peer could hold a page indefinitely, and two such pages the whole gallery: with
+    /// two workers the run then stops several pages short with the active badge still showing.
+    /// Eight KiB/s still lets a 20 MB original finish over a poor cellular link.
+    public static let pageTransferMinimumThroughput: Double = 8 * 1024
+    /// How often each attempt's own watchdog re-evaluates the rule.
+    public static let pageTransferWatchdogInterval: TimeInterval = 5
+    /// How often a running attempt logs its progress, so a device archive shows which page is slow
+    /// and why.
+    public static let pageTransferProgressLogInterval: TimeInterval = 30
 }
 
 // MARK: - In-Flight Page Transfers
@@ -76,7 +155,7 @@ extension DownloadCoordinator {
     /// is the unit the card reports on, and a retry is the same page continuing rather than a new
     /// one starting.
     @discardableResult
-    func beginPageTransfer(gid: String, pageIndex: Int) -> UUID {
+    func beginPageTransfer(gid: String, pageIndex: Int, peerPort: Int? = nil) -> UUID {
         let startDate = now()
         var transfer = inFlightPageTransfers[gid]?[pageIndex] ?? InFlightPageTransfer(
             startDate: startDate,
@@ -89,6 +168,11 @@ extension DownloadCoordinator {
         transfer.firstByteDate = nil
         transfer.lastByteDate = nil
         transfer.bytesWritten = 0
+        transfer.bytesExpected = 0
+        transfer.throughputWindowStartDate = nil
+        transfer.throughputWindowStartBytes = 0
+        transfer.peerPort = peerPort
+        transfer.lastProgressLogDate = nil
         transfer.isTransferring = true
         transfer.stallLogged = false
         transfer.isAbandoned = false
@@ -152,6 +236,7 @@ extension DownloadCoordinator {
             transfer.lastByteDate = byteDate
             if transfer.firstByteDate == nil {
                 transfer.firstByteDate = byteDate
+                transfer.throughputWindowStartDate = byteDate
                 logFirstPageTransferBytes(
                     gid: gid,
                     pageIndex: pageIndex,
@@ -163,6 +248,7 @@ extension DownloadCoordinator {
                 )
             }
         }
+        transfer.bytesExpected = bytesExpected
         if bytesExpected > 0 {
             let subunits = ContinuedProcessingSession.subunitsPerUnit * bytesWritten / bytesExpected
             transfer.creditedSubunits = max(
@@ -198,27 +284,41 @@ extension DownloadCoordinator {
     /// The transfer's own timeout runs even when iOS has no continued-processing card.
     /// Recheck activity after sleeping so a transfer that is still receiving bytes can finish.
     func watchPageTransfer(gid: String, pageIndex: Int, attemptID: UUID) async {
-        var delay = Self.pageTransferAbandonThreshold
         while !Task.isCancelled {
             do {
-                try await clock.sleep(for: .seconds(delay))
+                try await clock.sleep(for: .seconds(Self.pageTransferWatchdogInterval))
             } catch {
                 return
             }
-            guard !Task.isCancelled, let transfer = inFlightPageTransfers[gid]?[pageIndex],
-                  transfer.attemptID == attemptID, transfer.isTransferring, !transfer.isAbandoned
+            guard !Task.isCancelled,
+                  inFlightPageTransfers[gid]?[pageIndex]?.attemptID == attemptID,
+                  evaluatePageTransfer(gid: gid, pageIndex: pageIndex, at: now())
             else { return }
-
-            let idle = transfer.idleInterval(at: now())
-            if idle >= Self.pageTransferAbandonThreshold {
-                abandonPageTransfer(gid: gid, pageIndex: pageIndex, idle: idle)
-                return
-            }
-            delay = Self.pageTransferAbandonThreshold - idle
         }
     }
 
-    /// Gives up on an attempt that has produced no bytes for `pageTransferAbandonThreshold` and
+    /// Applies the abandonment rule to one attempt at `date`, and writes its progress line when one
+    /// is due. Returns whether the attempt is still running.
+    @discardableResult
+    func evaluatePageTransfer(gid: String, pageIndex: Int, at date: Date) -> Bool {
+        guard var transfer = inFlightPageTransfers[gid]?[pageIndex],
+              transfer.isTransferring, !transfer.isAbandoned
+        else { return false }
+        if let reason = transfer.abandonReason(at: date) {
+            inFlightPageTransfers[gid]?[pageIndex] = transfer
+            abandonPageTransfer(gid: gid, pageIndex: pageIndex, reason: reason, at: date)
+            return false
+        }
+        let logInterval = date.timeIntervalSince(transfer.lastProgressLogDate ?? transfer.startDate)
+        if logInterval >= Self.pageTransferProgressLogInterval {
+            transfer.lastProgressLogDate = date
+            logPageTransferProgress(gid: gid, pageIndex: pageIndex, transfer: transfer, at: date)
+        }
+        inFlightPageTransfers[gid]?[pageIndex] = transfer
+        return true
+    }
+
+    /// Gives up on an attempt that broke the abandonment rule (`abandonReason(at:)`) and
     /// cancels it, so the page can be retried instead of waiting on a host that stopped answering.
     ///
     /// **Why cancel-and-retry rather than wait (G-15-2I).** One attempt hung for eleven minutes
@@ -237,25 +337,30 @@ extension DownloadCoordinator {
     ///   and, when available, one main-site request.
     ///   With auto-retry off, the page stops after the first failed attempt.
     /// - A transfer the SYSTEM has merely deferred — a discretionary background transfer waiting
-    ///   its turn — is treated exactly like a hung one. That is inside the sixty-second rule as
+    ///   its turn — is treated exactly like a hung one. That is inside the background idle rule as
     ///   decided, and the page stays retryable through the record's own retry surface.
     ///
     /// Cancelling is the LAST thing it does, after the entry is written back and the line is
     /// logged, so the attempt's catch cannot observe a half-updated entry and mistake this for the
     /// caller's cancellation.
-    func abandonPageTransfer(gid: String, pageIndex: Int, idle: TimeInterval) {
+    func abandonPageTransfer(
+        gid: String,
+        pageIndex: Int,
+        reason: PageTransferAbandonReason,
+        at date: Date
+    ) {
         guard var transfer = inFlightPageTransfers[gid]?[pageIndex],
               transfer.isTransferring, !transfer.isAbandoned
         else { return }
         transfer.isAbandoned = true
         transfer.stallLogged = true
         inFlightPageTransfers[gid]?[pageIndex] = transfer
-        logStarvedPageTransfer(
+        logPageTransfer(
+            event: "abandoned, \(reason.rawValue)",
             gid: gid,
             pageIndex: pageIndex,
-            startedInBackground: transfer.startedInBackground,
-            elapsedMilliseconds: Self.milliseconds(idle),
-            outcome: "abandoned"
+            transfer: transfer,
+            at: date
         )
         transfer.attempt?.cancel()
     }
@@ -348,7 +453,7 @@ extension DownloadCoordinator {
     /// so a transfer the expiry's pause sweep cancelled still says how long it starved.
     ///
     /// `outcome` is a closed three-value vocabulary: `still transferring` (the sweep's ten-second
-    /// report), `abandoned` (the sweep gave up at sixty and cancelled the attempt, G-15-2I) and
+    /// report), `abandoned` (the rule gave up and cancelled the attempt, G-15-2I) and
     /// `ended` (the transfer stopped having never received a byte). Adding the abandonment added no
     /// second masked site, which is the whole reason it routes through here.
     func logStarvedPageTransfer(
@@ -370,6 +475,41 @@ extension DownloadCoordinator {
 
     /// A closed two-value vocabulary, so the field can go out `public` without carrying anything
     /// derived from the gallery or the device.
+    /// The periodic line for a running attempt.
+    func logPageTransferProgress(
+        gid: String,
+        pageIndex: Int,
+        transfer: InFlightPageTransfer,
+        at date: Date
+    ) {
+        logPageTransfer(event: "running", gid: gid, pageIndex: pageIndex, transfer: transfer, at: date)
+    }
+
+    /// One attempt's state in a single line: what happened, how long it has run and been silent,
+    /// the bytes against the announced size, and the server's port. Page numbers and integers are
+    /// public, the gallery is hash-masked, and no URL is logged.
+    private func logPageTransfer(
+        event: String,
+        gid: String,
+        pageIndex: Int,
+        transfer: InFlightPageTransfer,
+        at date: Date
+    ) {
+        let origin = Self.transferOrigin(startedInBackground: transfer.startedInBackground)
+        let elapsed = Self.milliseconds(date.timeIntervalSince(transfer.startDate))
+        let idle = Self.milliseconds(transfer.idleInterval(at: date))
+        let port = transfer.peerPort ?? 443
+        logger.notice(
+            """
+            Page transfer \(event, privacy: .public), gid: \(gid, privacy: .private(mask: .hash)), \
+            page \(pageIndex, privacy: .public), created \(origin, privacy: .public), \
+            \(elapsed, privacy: .public) ms elapsed, \(idle, privacy: .public) ms idle, \
+            \(transfer.bytesWritten, privacy: .public) of \(transfer.bytesExpected, privacy: .public) bytes, \
+            port \(port, privacy: .public).
+            """
+        )
+    }
+
     private static func transferOrigin(startedInBackground: Bool) -> String {
         startedInBackground ? "background" : "foreground"
     }
@@ -378,7 +518,7 @@ extension DownloadCoordinator {
     ///
     /// Internal rather than `private` because the heartbeat's `sweepStarvedPageTransfers` is in
     /// another file and reports the same quantity: with two spellings of it, the ten-second line
-    /// and the sixty-second one could round a shared interval differently.
+    /// and the abandonment one could round a shared interval differently.
     static func milliseconds(_ interval: TimeInterval) -> Int {
         Int((interval * 1000).rounded())
     }

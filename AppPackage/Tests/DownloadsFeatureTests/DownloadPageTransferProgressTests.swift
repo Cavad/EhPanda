@@ -216,7 +216,7 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
     /// The sweep one second short of the threshold is the boundary's other side: without it the
     /// case would pass against any threshold at or below sixty seconds.
     @Test
-    func aTransferWithoutBytesIsAbandonedAtTheThresholdAsARetryableNetworkingFailure() async throws {
+    func aTransferWithoutAFirstByteIsAbandonedAtTheDeadlineAsARetryableNetworkingFailure() async throws {
         let gallery = Self.makeGallery(gid: "240060")
         let fixture = try await makeFrozenFixture(
             gallery: gallery,
@@ -227,7 +227,7 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
         let manager = fixture.context.manager
         let attempt = try await startTransfer(gid: gallery.gid, pageIndex: 3, on: manager)
 
-        fixture.advance(by: DownloadCoordinator.pageTransferAbandonThreshold - 1)
+        fixture.advance(by: DownloadCoordinator.pageTransferFirstByteDeadline - 1)
         await manager.testingSweepStarvedPageTransfers()
         #expect(await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: 3))
 
@@ -280,8 +280,10 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
     /// The sweep at seventy seconds is the case's whole point — seventy seconds since the attempt
     /// started, twenty since its last byte — and a rule measuring from the start would abandon it
     /// there.
+    /// A trickle never trips the idle bound: bytes keep arriving. Build 169 revises G-15-2I so the
+    /// throughput floor moves such a page to another server once a full window has passed.
     @Test
-    func aSlowButMovingTransferIsNeverAbandonedUntilItsOwnBytesStop() async throws {
+    func aTrickleBelowTheThroughputFloorIsAbandonedWhileItsBytesStillMove() async throws {
         let gallery = Self.makeGallery(gid: "240070")
         let fixture = try await makeFrozenFixture(
             gallery: gallery,
@@ -291,31 +293,85 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
         defer { removeTemporaryItem(at: fixture.context.rootURL) }
         let manager = fixture.context.manager
         let attempt = try await startTransfer(gid: gallery.gid, pageIndex: 2, on: manager)
+        let window = DownloadCoordinator.pageTransferThroughputWindow
 
-        fixture.advance(by: 50)
+        fixture.advance(by: 5)
         await manager.testingRecordPageTransferBytes(
-            gid: gallery.gid,
-            pageIndex: 2,
-            bytesWritten: 100,
-            bytesExpected: 1000
+            gid: gallery.gid, pageIndex: 2, bytesWritten: 100, bytesExpected: 1_000_000
         )
-        fixture.advance(by: 20)
+        // Bytes arrive well inside the idle bound each time, but far too few of them.
+        var bytesWritten: Int64 = 100
+        var elapsed: TimeInterval = 0
+        while elapsed + 15 < window {
+            fixture.advance(by: 15)
+            elapsed += 15
+            bytesWritten += 100
+            await manager.testingRecordPageTransferBytes(
+                gid: gallery.gid, pageIndex: 2, bytesWritten: bytesWritten, bytesExpected: 1_000_000
+            )
+            await manager.testingSweepStarvedPageTransfers()
+            #expect(await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: 2))
+        }
+
+        fixture.advance(by: window - elapsed)
+        await manager.testingSweepStarvedPageTransfers()
+
+        let error = try #require(await transferError(of: attempt) as? AppError)
+        #expect(error == .networkingFailed)
+    }
+
+    /// A transfer above the floor runs past any number of windows: a large original on a slow but
+    /// healthy link is never cut off.
+    @Test
+    func aTransferAboveTheThroughputFloorKeepsRunningPastTheWindow() async throws {
+        let gallery = Self.makeGallery(gid: "240072")
+        let fixture = try await makeFrozenFixture(
+            gallery: gallery,
+            client: BackgroundProcessingClientSpy().client,
+            pageDownloader: Self.hangingPageDownloader
+        )
+        defer { removeTemporaryItem(at: fixture.context.rootURL) }
+        let manager = fixture.context.manager
+        let attempt = try await startTransfer(gid: gallery.gid, pageIndex: 2, on: manager)
+        defer { attempt.cancel() }
+        let stepBytes = Int64(DownloadCoordinator.pageTransferMinimumThroughput * 10 * 2)
+
+        fixture.advance(by: 2)
+        await manager.testingRecordPageTransferBytes(
+            gid: gallery.gid, pageIndex: 2, bytesWritten: 1, bytesExpected: 100_000_000
+        )
+        var bytesWritten: Int64 = 1
+        for _ in 0..<20 {
+            fixture.advance(by: 10)
+            bytesWritten += stepBytes
+            await manager.testingRecordPageTransferBytes(
+                gid: gallery.gid, pageIndex: 2, bytesWritten: bytesWritten, bytesExpected: 100_000_000
+            )
+            await manager.testingSweepStarvedPageTransfers()
+            #expect(await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: 2))
+        }
+    }
+
+    /// An attempt created in the background keeps the original sixty-second idle rule, since the
+    /// system may defer it before its first byte.
+    @Test
+    func aBackgroundCreatedTransferKeepsTheOriginalIdleBound() async throws {
+        let gallery = Self.makeGallery(gid: "240074")
+        let fixture = try await makeFrozenFixture(
+            gallery: gallery,
+            client: BackgroundProcessingClientSpy().client,
+            pageDownloader: Self.hangingPageDownloader
+        )
+        defer { removeTemporaryItem(at: fixture.context.rootURL) }
+        let manager = fixture.context.manager
+        await manager.setIsSceneInBackground(true)
+        let attempt = try await startTransfer(gid: gallery.gid, pageIndex: 2, on: manager)
+
+        fixture.advance(by: DownloadCoordinator.backgroundPageTransferAbandonThreshold - 1)
         await manager.testingSweepStarvedPageTransfers()
         #expect(await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: 2))
 
-        fixture.advance(by: 30)
-        await manager.testingRecordPageTransferBytes(
-            gid: gallery.gid,
-            pageIndex: 2,
-            bytesWritten: 300,
-            bytesExpected: 1000
-        )
-        fixture.advance(by: 10)
-        await manager.testingSweepStarvedPageTransfers()
-        #expect(await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: 2))
-
-        // Sixty-one seconds since the last byte, and only now.
-        fixture.advance(by: 51)
+        fixture.advance(by: 1)
         await manager.testingSweepStarvedPageTransfers()
 
         let error = try #require(await transferError(of: attempt) as? AppError)

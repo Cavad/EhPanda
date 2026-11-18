@@ -81,10 +81,12 @@ public struct DownloadsView: View {
 private extension DownloadsView {
     @ContentBuilder private var downloadsList: some View {
         switch store.loadingState {
-        case .loading where store.downloads.isEmpty:
+        case .loading where store.rows.isEmpty:
             LoadingView()
 
         default:
+            // Filtered once per render rather than once per modifier.
+            let filteredIDs = store.filteredDownloads.map(\.id)
             downloadContent(for: store.setting.galleryListPresentation[.downloads])
             .accessibilityIdentifier("downloads-gallery-list")
             .refreshable { store.send(.refreshDownloads) }
@@ -94,8 +96,8 @@ private extension DownloadsView {
             // keyword filter change — so the deletion reads as the standard List collapse instead
             // of the snapshot snapping the row out with no transition at all.
             // Under Reduce Motion the row snaps out instead of collapsing; delete flow and manifest unchanged.
-            .animation(reduceMotion ? nil : .default, value: store.filteredDownloads.map(\.id))
-            .onChange(of: store.filteredDownloads.map(\.id), initial: true) { previousIDs, ids in
+            .animation(reduceMotion ? nil : .default, value: filteredIDs)
+            .onChange(of: filteredIDs, initial: true) { previousIDs, ids in
                 store.visibleGalleryID = GalleryScrollAnchor.retaining(
                     store.visibleGalleryID, previousIDs: previousIDs, currentIDs: ids
                 )
@@ -164,7 +166,7 @@ private extension DownloadsView {
     }
 
     @ContentBuilder private var emptyStateView: some View {
-        if store.downloads.isEmpty {
+        if store.rows.isEmpty {
             ContentUnavailableView {
                 Label(.downloadsEmptyTitle, systemSymbol: .squareAndArrowDown)
             } description: {

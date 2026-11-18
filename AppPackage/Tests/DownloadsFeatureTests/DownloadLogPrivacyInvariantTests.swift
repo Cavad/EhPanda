@@ -110,7 +110,7 @@ struct DownloadLogPrivacyInvariantTests {
     private static let expectedHashMaskedCounts = [
         "DownloadClient+Execution.swift": 4,
         "DownloadClient+Manager.swift": 1,
-        "DownloadClient+PageTransferProgress.swift": 2,
+        "DownloadClient+PageTransferProgress.swift": 3,
         "DownloadClient+PersistenceNormalize.swift": 1,
         "DownloadClient+PublicAPI.swift": 2,
         "DownloadClient+Scheduling.swift": 3,
@@ -122,7 +122,7 @@ struct DownloadLogPrivacyInvariantTests {
     ///
     /// The table is keyed by file name, so two same-named files anywhere under the module would
     /// collapse into one entry and hide a site. The joined count cannot collapse.
-    private static let expectedHashMaskedTotal = 15
+    private static let expectedHashMaskedTotal = 16
 
     @Test
     func testNoDownloadLogPublishesGalleryIdentity() throws {

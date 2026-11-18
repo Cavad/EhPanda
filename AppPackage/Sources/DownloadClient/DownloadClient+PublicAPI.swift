@@ -16,7 +16,11 @@ extension DownloadCoordinator {
         }
     }
 
+    /// The indexed snapshot. Before the first scan has run it performs that scan rather than
+    /// answering an empty list, so a Downloads tab opened during launch shows its loading state
+    /// until the library is known instead of the empty state.
     public func fetchDownloads() async -> [DownloadedGallery] {
+        guard hasLoadedIndex else { return await reloadDownloadIndex() }
         return await indexedDownloads()
     }
 

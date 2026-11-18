@@ -147,7 +147,11 @@ extension DownloadCoordinator {
         // An abandoned attempt surfaces as the retryable `AppError.networkingFailed`, never as
         // `CancellationError`, so `downloadPage`'s attempts loop retries the page with a fresh
         // failover re-resolution rather than propagating a stop the user never asked for.
-        let attemptID = beginPageTransfer(gid: context.gid, pageIndex: context.pageIndex)
+        let attemptID = beginPageTransfer(
+            gid: context.gid,
+            pageIndex: context.pageIndex,
+            peerPort: request.url?.port
+        )
         let pageDownloader = isSceneInBackground ? self.pageDownloader : foregroundPageDownloader ?? self.pageDownloader
         let attempt = Task { [pageDownloader, weak self] in
             try await pageDownloader.download(request, context) { [weak self] written, expected in

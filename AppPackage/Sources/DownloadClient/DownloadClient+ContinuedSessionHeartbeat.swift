@@ -128,7 +128,8 @@ extension DownloadCoordinator {
     /// idle time: `InFlightPageTransfer.idleInterval(at:)`, the interval since the last byte
     /// arrived — or since the attempt started, when none has.
     ///
-    /// At `pageTransferAbandonThreshold` the attempt is ABANDONED (`abandonPageTransfer`): it is
+    /// When the shared rule `InFlightPageTransfer.abandonReason(at:)` fires (no first byte, idle,
+    /// or below the throughput floor), the attempt is ABANDONED (`abandonPageTransfer`): it is
     /// cancelled and surfaces to the page's existing retry path as a retryable networking failure,
     /// so a host that stopped answering can no longer hold the worker, the queue and the session
     /// (G-15-2I). Below that, at `pageTransferStallThreshold`, it is only reported, once, through
@@ -136,7 +137,7 @@ extension DownloadCoordinator {
     ///
     /// Measuring the log from the last byte rather than from the attempt's start widens what that
     /// ten-second line names: a transfer that delivered bytes and then went quiet is now reported
-    /// too. That is the same starvation the sixty-second rule acts on, and the line's wording — "N
+    /// too. That is the same starvation the idle rule acts on, and the line's wording — "N
     /// ms without bytes" — stays true of it.
     ///
     /// Each page also watches its own idle deadline while the app is running. The heartbeat
@@ -145,11 +146,11 @@ extension DownloadCoordinator {
         let sweepDate = now()
         for (gid, transfers) in inFlightPageTransfers {
             for (pageIndex, transfer) in transfers {
-                guard transfer.isTransferring, !transfer.isAbandoned else { continue }
+                guard transfer.isTransferring, !transfer.isAbandoned,
+                      evaluatePageTransfer(gid: gid, pageIndex: pageIndex, at: sweepDate)
+                else { continue }
                 let idle = transfer.idleInterval(at: sweepDate)
-                if idle >= Self.pageTransferAbandonThreshold {
-                    abandonPageTransfer(gid: gid, pageIndex: pageIndex, idle: idle)
-                } else if idle >= Self.pageTransferStallThreshold, !transfer.stallLogged {
+                if idle >= Self.pageTransferStallThreshold, !transfer.stallLogged {
                     inFlightPageTransfers[gid]?[pageIndex]?.stallLogged = true
                     logStarvedPageTransfer(
                         gid: gid,

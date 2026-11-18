@@ -218,12 +218,28 @@ public struct DownloadStore: Sendable {
         manifest: DownloadManifest,
         discardingRejected: Bool = false
     ) -> PageFileScan {
+        guard !manifest.pages.isEmpty else {
+            return .init(pages: [:], scanSucceeded: true, unprobedPages: [])
+        }
+        return pageFileScan(
+            listing: existingAssetFileURLs(folderURL: folderURL),
+            manifest: manifest,
+            discardingRejected: discardingRejected
+        )
+    }
+
+    /// The scan over a listing the caller already holds, nil when that listing failed.
+    private func pageFileScan(
+        listing: [URL]?,
+        manifest: DownloadManifest,
+        discardingRejected: Bool
+    ) -> PageFileScan {
         let pageNumbers = Set(manifest.pages.keys)
         guard !pageNumbers.isEmpty else {
             return .init(pages: [:], scanSucceeded: true, unprobedPages: [])
         }
 
-        guard let fileURLs = existingAssetFileURLs(folderURL: folderURL) else {
+        guard let fileURLs = listing else {
             return .init(pages: [:], scanSucceeded: false, unprobedPages: [])
         }
         let prefix = identityPrefix(gid: manifest.gid, token: manifest.token)
@@ -542,7 +558,11 @@ public struct DownloadStore: Sendable {
             return nil
         }
 
-        return fileURLs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+        // `lastPathComponent` builds a string per call, so read each name once before sorting.
+        return fileURLs
+            .map({ (name: $0.lastPathComponent, url: $0) })
+            .sorted(by: { $0.name < $1.name })
+            .map(\.url)
     }
 
     private func existingAssetFileURL(
@@ -698,12 +718,23 @@ public struct DownloadStore: Sendable {
         // so. Since CR-03 that is the DEFAULT rather than this site's opt-out, so no argument is
         // written here at all; the only sites still discarding are the two COVER resolutions, and a
         // cover carries no recorded hash to diverge from.
+        // One listing serves both the cover and the pages, so each scan lists a gallery once.
+        let listing = existingAssetFileURLs(folderURL: folderURL)
+        let localCoverURL = existingAssetFileURL(
+            in: listing ?? [],
+            prefix: coverFilePrefix(gid: manifest.gid, token: manifest.token)
+        )
+        let localPageURLs = pageFileScan(listing: listing, manifest: manifest, discardingRejected: false)
+            .pages
+            .reduce(into: [Int: URL]()) { result, entry in
+                result[entry.key] = folderURL.appending(path: entry.value)
+            }
         return DownloadFolderRecord(
             relativePath: "\(parentFolderName)/\(folderURL.lastPathComponent)",
             folderURL: folderURL,
             manifest: manifest,
-            localCoverURL: localCoverURL(folderURL: folderURL, manifest: manifest),
-            localPageURLs: imageURLs(folderURL: folderURL, manifest: manifest),
+            localCoverURL: localCoverURL,
+            localPageURLs: localPageURLs,
             modificationDate: modificationDate,
             parentFolderName: parentFolderName
         )
@@ -837,13 +868,14 @@ public struct DownloadStore: Sendable {
         // an absence into a destructive decision at all. One that needed to would have to take a
         // classification of its own, through `pageFileScan(folderURL:manifest:)`, rather than read a
         // non-answer this comment has licensed for someone else's callers.
-        guard fileManager.operate({ $0.fileExists(atPath: url.path(percentEncoded: false)) }) else {
-            return .unprobeable
-        }
-
+        //
+        // The existence check is folded into the metadata read (one call per file, same answers): a
+        // missing file fails it and the content read, so it stays `unprobeable`. Only a symbolic
+        // link, which the metadata read does not follow, is checked for a target separately.
+        let path = url.path(percentEncoded: false)
         let attributes: [FileAttributeKey: Any]
         do {
-            attributes = try fileManager.operate { try $0.attributesOfItem(atPath: url.path(percentEncoded: false)) }
+            attributes = try fileManager.operate { try $0.attributesOfItem(atPath: path) }
         } catch {
             // The narrowed G-15-13 trigger: the metadata read itself is unavailable — an I/O error,
             // a permission change, a volume going away mid-scan. Content is the only question left
@@ -851,7 +883,12 @@ public struct DownloadStore: Sendable {
             return probeAssetFileContent(at: url)
         }
 
-        let isRegularFile = (attributes[.type] as? FileAttributeType).map({ $0 == .typeRegular }) ?? true
+        let fileType = attributes[.type] as? FileAttributeType
+        if fileType == .typeSymbolicLink,
+           !fileManager.operate({ $0.fileExists(atPath: path) }) {
+            return .unprobeable
+        }
+        let isRegularFile = fileType.map({ $0 == .typeRegular }) ?? true
         guard isRegularFile else {
             return .rejected(
                 fileRemains: discardRejectedAssetIfPermitted(at: url, discardingRejected: discardingRejected)

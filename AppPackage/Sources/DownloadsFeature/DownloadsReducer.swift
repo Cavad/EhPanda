@@ -113,13 +113,15 @@ public struct DownloadsReducer: Sendable {
 
         public init() {}
 
+        /// Read straight off the rows, without first copying every gallery into an intermediate
+        /// array, since the list reads it several times on every render.
         var filteredDownloads: [DownloadedGallery] {
-            downloads.filter {
-                $0.matches(folderFilter: folderFilter)
-                    && (
-                        keyword.isEmpty
-                            || $0.searchableText.caseInsensitiveContains(keyword)
-                    )
+            rows.compactMap { row in
+                let download = row.download
+                guard download.matches(folderFilter: folderFilter),
+                      keyword.isEmpty || download.searchableText.caseInsensitiveContains(keyword)
+                else { return nil }
+                return download
             }
         }
     }
