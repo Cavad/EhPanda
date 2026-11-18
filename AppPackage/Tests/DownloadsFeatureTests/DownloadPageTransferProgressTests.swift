@@ -325,10 +325,16 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
     @Test(arguments: [100, 90])
     func duplicateOrOlderByteCountsDoNotKeepTheLastPageActive(reportedBytes: Int64) async throws {
         let gallery = Self.makeGallery(gid: "240075")
+        let gate = AsyncStream<Void>.makeStream()
+        defer { gate.continuation.finish() }
         let fixture = try await makeFrozenFixture(
             gallery: gallery,
             client: BackgroundProcessingClientSpy().client,
-            pageDownloader: Self.hangingPageDownloader
+            pageDownloader: .init { _, _, _ in
+                for await _ in gate.stream {}
+                try Task.checkCancellation()
+                throw AppError.unknown
+            }
         )
         defer { removeTemporaryItem(at: fixture.context.rootURL) }
         let manager = fixture.context.manager
@@ -348,11 +354,10 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
 
         fixture.advance(by: 1)
         await manager.testingSweepStarvedPageTransfers()
-        let isTransferring = await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: page)
-        #expect(!isTransferring)
-        if !isTransferring {
-            #expect(await transferError(of: attempt) as? AppError == .networkingFailed)
-        }
+        gate.continuation.finish()
+        // The sweep requests cancellation synchronously. The attempt actor clears the active
+        // flag as it unwinds, so assert the completed attempt's result.
+        #expect(await transferError(of: attempt) as? AppError == .networkingFailed)
     }
 
     /// Every attempt measures its own idle time from its own start, because `beginPageTransfer`
