@@ -5,7 +5,14 @@ import DownloadClient
 import Foundation
 import HapticsClient
 import NetworkingFeature
+#if DEBUG && targetEnvironment(simulator)
+import OSLog
+#endif
 import UIKit
+
+#if DEBUG && targetEnvironment(simulator)
+private let diagnosisLogger = Logger(subsystem: "app.ehpanda.diagnosis", category: "gallery")
+#endif
 
 // MARK: - Fetch & Gallery Ops Action Handlers
 extension DetailReducer {
@@ -78,6 +85,12 @@ extension DetailReducer {
                     }
                     return .merge(effects)
                 case .failure(let error):
+                    #if DEBUG && targetEnvironment(simulator)
+                    if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+                        let code = DownloadFailure(error: error).code.rawValue
+                        diagnosisLogger.notice("DL_DIAG detail_failed code=\(code, privacy: .public)")
+                    }
+                    #endif
                     state.loadingState = .failed(error)
                 }
                 return .none

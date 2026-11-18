@@ -1,0 +1,38 @@
+name: Diagnose gallery downloads on iPhone
+
+on:
+  push:
+    branches: [codex/gallery-download-diagnosis]
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    runs-on: xcode-27
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build the app for iPhone Simulator
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project EhPanda.xcodeproj -scheme EhPanda -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone Air,OS=27.0' \
+            -derivedDataPath "$RUNNER_TEMP/EhPandaDiagnosis" \
+            -onlyUsePackageVersionsFromResolvedFile -skipMacroValidation -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -quiet
+      - name: Run the app with real transfers
+        run: |
+          python3 Scripts/diagnose-gallery-downloads.py \
+            "$RUNNER_TEMP/EhPandaDiagnosis/Build/Products/Debug-iphonesimulator/EhPanda.app" \
+            "$RUNNER_TEMP/download-diagnosis"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: download-diagnosis
+          path: ${{ runner.temp }}/download-diagnosis/*.json
+          if-no-files-found: ignore
+          retention-days: 7

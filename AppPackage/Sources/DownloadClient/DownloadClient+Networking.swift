@@ -120,6 +120,14 @@ extension DownloadCoordinator {
         )
         let httpResponse = transfer.response as? HTTPURLResponse
         let isHTTPSuccess = httpResponse.map({ (200..<300).contains($0.statusCode) }) == true
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+            let status = httpResponse?.statusCode ?? 0
+            let expected = transfer.response.expectedContentLength
+            let page = context.pageIndex
+            logger.notice("DL_DIAG response page=\(page) http=\(status) expected_bytes=\(expected)")
+        }
+        #endif
         if let error = responseError ?? (isHTTPSuccess ? nil : .networkingFailed) {
             discardRejectedResponseFile(at: transfer.fileURL)
             if let taskIdentifier = transfer.taskIdentifier {
@@ -181,6 +189,13 @@ extension DownloadCoordinator {
                 attempt.cancel()
             }
         } catch {
+            #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+                let nsError = error as NSError
+                let isURL = nsError.domain == NSURLErrorDomain
+                logger.notice("DL_DIAG transfer_error page=\(context.pageIndex) url_error=\(isURL) code=\(nsError.code)")
+            }
+            #endif
             // A pause or group cancellation cancels this parent task. A URLSession or watchdog
             // cancellation while the parent is active belongs to one page and can be retried.
             try Task.checkCancellation()

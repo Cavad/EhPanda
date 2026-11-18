@@ -230,6 +230,18 @@ extension DownloadCoordinator {
             thumbnailURLs
                 .merge(pageURLs, uniquingKeysWith: { _, new in new })
         }
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+            let missing = requiredPageIndices.filter { thumbnailURLs[$0] == nil }
+            let missingIndices = missing.map(String.init).joined(separator: ",")
+            logger.notice(
+                """
+                DL_DIAG thumbnails required=\(requiredPageIndices.count) found=\(thumbnailURLs.count) \
+                missing=\(missingIndices, privacy: .public)
+                """
+            )
+        }
+        #endif
         guard let firstURL = requiredPageIndices.lazy
                 .compactMap({ thumbnailURLs[$0] }).first
                 ?? thumbnailURLs.values.first

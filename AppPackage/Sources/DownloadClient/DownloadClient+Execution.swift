@@ -81,6 +81,11 @@ extension DownloadCoordinator {
             """
         )
         await settleCompletedDownload(gid: gid)
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+            logger.notice("DL_DIAG settled result=completed")
+        }
+        #endif
     }
 
     /// Removes EVERY folder of one gallery, and is therefore reserved for the user's own

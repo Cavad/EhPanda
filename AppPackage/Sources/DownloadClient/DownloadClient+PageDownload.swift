@@ -236,6 +236,11 @@ extension DownloadCoordinator {
                 case .slowPage(let page):
                     if schedule.activePages.contains(page) {
                         schedule.slowPages.insert(page)
+                        #if DEBUG && targetEnvironment(simulator)
+                        if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+                            logger.notice("DL_DIAG slow page=\(page)")
+                        }
+                        #endif
                     }
                     continue
                 case .timerCancelled:

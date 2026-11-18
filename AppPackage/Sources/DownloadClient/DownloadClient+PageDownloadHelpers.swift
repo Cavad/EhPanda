@@ -2,7 +2,12 @@ import AppModels
 import AppTools
 import Foundation
 import NetworkingFeature
+import OSLogExt
 import ParserFeature
+
+#if DEBUG && targetEnvironment(simulator)
+private let diagnosisLogger = Logger(category: .init(describing: DownloadCoordinator.self))
+#endif
 
 // MARK: - Download Single Page
 extension DownloadCoordinator {
@@ -22,6 +27,9 @@ extension DownloadCoordinator {
         for attempt in 0..<attempts {
             try Task.checkCancellation()
             var attemptedImageURL: URL?
+            #if DEBUG && targetEnvironment(simulator)
+            let began = Date()
+            #endif
             do {
                 let resolved: ResolvedImageSource
                 if attempt == 3 {
@@ -56,6 +64,13 @@ extension DownloadCoordinator {
                 // route without waiting for that transfer to time out again.
                 guard !failedImageURLs.contains(resolved.imageURL) else { continue }
                 attemptedImageURL = resolved.imageURL
+                #if DEBUG && targetEnvironment(simulator)
+                if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+                    let port = resolved.imageURL.port ?? 443
+                    let peer = resolved.imageURL.host()?.hasSuffix(".hath.network") ?? false
+                    diagnosisLogger.notice("DL_DIAG resolved page=\(index) attempt=\(attempt) port=\(port) peer=\(peer)")
+                }
+                #endif
                 return try await downloadAndSavePage(
                     index: index,
                     resolvedImageSource: resolved,
@@ -67,6 +82,19 @@ extension DownloadCoordinator {
             } catch let error as AppError {
                 try Task.checkCancellation()
                 capturedError = error
+                #if DEBUG && targetEnvironment(simulator)
+                if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+                    let stage = attemptedImageURL == nil ? "viewer" : "transfer_or_save"
+                    let code = DownloadFailure(error: error).code.rawValue
+                    let seconds = Int(Date().timeIntervalSince(began))
+                    diagnosisLogger.notice(
+                        """
+                        DL_DIAG attempt_failed page=\(index) attempt=\(attempt) stage=\(stage, privacy: .public) \
+                        code=\(code, privacy: .public) seconds=\(seconds)
+                        """
+                    )
+                }
+                #endif
                 if let attemptedImageURL {
                     failedImageURLs.insert(attemptedImageURL)
                 }

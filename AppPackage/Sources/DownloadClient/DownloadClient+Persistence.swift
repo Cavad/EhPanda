@@ -176,6 +176,12 @@ extension DownloadCoordinator {
     /// auto-resume. Shared by the foreground `persistFailure` and the background/orphan
     /// fatal-error paths so a fatal 509/auth/ban settles identically either way.
     public func settleDownloadFailure(gid: String, error: AppError) async {
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+            let code = DownloadFailure(error: error).code.rawValue
+            logger.notice("DL_DIAG settled result=error code=\(code, privacy: .public)")
+        }
+        #endif
         downloadErrors[gid] = DownloadFailure(error: error)
         clearDownloadQueueIntent(gid: gid)
         await queueStore.remove(gid)

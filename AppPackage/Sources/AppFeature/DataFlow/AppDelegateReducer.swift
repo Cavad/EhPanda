@@ -1,3 +1,4 @@
+import AnalyticsClient
 import AppModels
 import AppTools
 public import ComposableArchitecture
@@ -48,10 +49,22 @@ public class AppDelegate: UIResponder, UIApplicationDelegate {
 
     public override init() {
         #if DEBUG
-        let configuration = UITestAutomation.prepare(environment: ProcessInfo.processInfo.environment)
+        let environment = ProcessInfo.processInfo.environment
+        let configuration = UITestAutomation.prepare(environment: environment)
+        let diagnosesDownloads = environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1"
+        if diagnosesDownloads {
+            UITestAutomation.applyFirstLaunchPreset(.answered)
+            @Shared(.setting) var setting
+            if environment["EHPANDA_AUTOMATION_GALLERY_URL"]?.hasPrefix("https://exhentai.org/") == true {
+                $setting.withLock({ $0.galleryHost = .exhentai })
+            }
+        }
         #endif
         store = Store(initialState: .init(), reducer: AppReducer.init) { dependencies in
             #if DEBUG
+            if diagnosesDownloads {
+                dependencies.analyticsClient = .noop
+            }
             if let configuration, configuration.shouldUseVisualTestHost {
                 UITestAutomation.configureVisualTestHost(
                     &dependencies, firstLaunch: configuration.firstLaunchPreset
