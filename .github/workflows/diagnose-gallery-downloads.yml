@@ -11,6 +11,7 @@ jobs:
   simulator:
     runs-on: xcode-27
     timeout-minutes: 55
+    environment: simulator-gallery-diagnosis
     steps:
       - uses: actions/checkout@v7
         with:
@@ -25,6 +26,9 @@ jobs:
             -onlyUsePackageVersionsFromResolvedFile -skipMacroValidation -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -quiet
       - name: Run the app with real transfers
+        env:
+          EHPANDA_DIAG_LOGIN_ID: ${{ secrets.EHPANDA_DIAG_LOGIN_ID }}
+          EHPANDA_DIAG_LOGIN_PASSWORD: ${{ secrets.EHPANDA_DIAG_LOGIN_PASSWORD }}
         run: |
           python3 Scripts/diagnose-gallery-downloads.py \
             "$RUNNER_TEMP/EhPandaDiagnosis/Build/Products/Debug-iphonesimulator/EhPanda.app" \

@@ -11,7 +11,7 @@ import time
 
 
 GALLERIES = ((80, "4119423/b944b57311"), (88, "4133615/e84a09fe25"))
-TERMINAL = ("settled result=", "detail_failed ")
+TERMINAL = ("settled result=", "detail_failed ", "login_failed ")
 
 
 def simctl(*args, **kwargs):
@@ -31,7 +31,7 @@ def page_counts(data, gid):
     return 0, 0, []
 
 
-def run_gallery(device, bundle, data, output, host, gallery, expected_count):
+def run_gallery(device, bundle, data, output, host, gallery, expected_count, login, launch):
     gid = gallery.split("/")[0]
     url = f"https://{host}.org/g/{gallery}/"
     preflight = subprocess.run(
@@ -39,12 +39,12 @@ def run_gallery(device, bundle, data, output, host, gallery, expected_count):
         capture_output=True, text=True, check=False,
     )
     label = f"{host}-{expected_count}"
-    print(f"{label} starting (runner gallery HTTP {preflight.stdout or 'unavailable'})", flush=True)
+    print(f"{label} starting (guest preflight HTTP {preflight.stdout or 'unavailable'})", flush=True)
     environment = os.environ | {
         "SIMCTL_CHILD_EHPANDA_DOWNLOAD_DIAGNOSIS": "1",
         "SIMCTL_CHILD_EHPANDA_AUTOMATION_GALLERY_URL": url,
-        "SIMCTL_CHILD_EHPANDA_AUTOMATION_AUTO_DOWNLOAD_GID": gid,
-    }
+        "SIMCTL_CHILD_EHPANDA_AUTOMATION_AUTO_DOWNLOAD_GID": "*",
+    } | login
     began = time.monotonic()
     events = []
     last_counts = None
@@ -57,7 +57,10 @@ def run_gallery(device, bundle, data, output, host, gallery, expected_count):
         offset = 0
         try:
             time.sleep(2)
-            simctl("launch", "--terminate-running-process", device, bundle, env=environment, capture_output=True)
+            if launch:
+                simctl("launch", "--terminate-running-process", device, bundle, env=environment, capture_output=True)
+            else:
+                simctl("openurl", device, url.replace("https://", "ehpanda://", 1), capture_output=True)
             while True:
                 time.sleep(3)
                 log.seek(offset)
@@ -71,7 +74,7 @@ def run_gallery(device, bundle, data, output, host, gallery, expected_count):
                     if counts[1] > 0:
                         print(f"{label} {elapsed}s: {counts[0]}/{counts[1]} saved", flush=True)
                 for event in new_events:
-                    if not event.startswith(("response ", "resolved ")):
+                    if not event.startswith(("response ", "resolved ", "transfer_started ")):
                         print(f"{label} {event}", flush=True)
                 if any(event.startswith(TERMINAL) for event in events):
                     reason = "terminal"
@@ -79,18 +82,17 @@ def run_gallery(device, bundle, data, output, host, gallery, expected_count):
                 if monitor.poll() is not None:
                     reason = "monitor_stopped"
                     break
-                if elapsed >= 900 or (elapsed >= 90 and counts[1] == 0):
+                if elapsed >= 900 or (elapsed >= 120 and counts[1] == 0):
                     reason = "deadline"
                     break
         finally:
             monitor.terminate()
             monitor.wait(timeout=15)
-            subprocess.run(["xcrun", "simctl", "terminate", device, bundle], capture_output=True, check=False)
     completed, total, missing = page_counts(data, gid)
     report = {
         "host": host, "expected_pages": expected_count, "manifest_pages": total, "saved_pages": completed,
         "missing_pages": missing, "runner_http": preflight.stdout, "seconds": round(time.monotonic() - began),
-        "end": reason, "events": events,
+        "end": reason, "events": events, "login_requested": bool(login),
     }
     (output / f"{label}.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"{label} final {completed}/{total or expected_count} in {report['seconds']}s ({reason})", flush=True)
@@ -100,6 +102,10 @@ def run_gallery(device, bundle, data, output, host, gallery, expected_count):
 def main():
     app, output = map(Path, sys.argv[1:])
     output.mkdir(parents=True, exist_ok=True)
+    login = {f"SIMCTL_CHILD_{key}": os.environ.pop(key, "")
+             for key in ("EHPANDA_DIAG_LOGIN_ID", "EHPANDA_DIAG_LOGIN_PASSWORD")}
+    if not all(login.values()):
+        login = {}
     with (app / "Info.plist").open("rb") as handle:
         bundle = plistlib.load(handle)["CFBundleIdentifier"]
     runtimes = json.loads(simctl("list", "devices", "available", "-j", capture_output=True).stdout)["devices"]
@@ -112,15 +118,19 @@ def main():
     for host in ("e-hentai", "exhentai"):
         simctl("install", udid, str(app))
         data = Path(simctl("get_app_container", udid, bundle, "data", capture_output=True).stdout.strip())
-        for expected, gallery in GALLERIES:
-            report = run_gallery(udid, bundle, data, output, host, gallery, expected)
-            if any("code=quotaExceeded" in event or "code=ipBanned" in event for event in report["events"]):
+        for index, (expected, gallery) in enumerate(GALLERIES):
+            report = run_gallery(udid, bundle, data, output, host, gallery, expected, login, launch=index == 0)
+            if any(event.startswith("login_failed ") or "code=quotaExceeded" in event or "code=ipBanned" in event
+                   for event in report["events"]):
                 break
-            if host == "exhentai" and report["runner_http"].startswith(("3", "4")) and not report["manifest_pages"]:
+            if host == "exhentai" and not report["manifest_pages"]:
+                break
+            if report["end"] == "deadline":
                 break
         simctl("uninstall", udid, bundle, capture_output=True)
 
 
 if __name__ == "__main__":
     main()
+
 

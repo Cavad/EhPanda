@@ -179,8 +179,14 @@ extension DetailReducer {
                 if let captureRoute = automation.captureRoute {
                     return captureRouteEffect(captureRoute, state: &state)
                 }
-                guard automation.autoDownloadGID == state.gallery.id,
-                      state.hasLoadedDownloadBadge
+                var matchesGallery = automation.autoDownloadGID == state.gallery.id
+                #if DEBUG && targetEnvironment(simulator)
+                if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1",
+                   automation.autoDownloadGID == "*" {
+                    matchesGallery = true
+                }
+                #endif
+                guard matchesGallery, state.hasLoadedDownloadBadge
                 else { return .none }
                 state.didRunLaunchAutomation = true
                 guard state.downloadBadge == nil else { return .none }

@@ -13,6 +13,9 @@ public struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private let appDelegate: AppDelegate
+    #if DEBUG && targetEnvironment(simulator)
+    @State private var didResolveDiagnosisLogin = false
+    #endif
 
     public init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
@@ -22,6 +25,18 @@ public struct RootView: View {
         content
             .animation(.easeInOut(duration: reduceMotion ? 0.2 : 0.3), value: isFirstLaunchComplete)
             .captureDiagnostics(store: appDelegate.store)
+            #if DEBUG && targetEnvironment(simulator)
+            .overlay {
+                if let credentials = appDelegate.diagnosisCredentials, !didResolveDiagnosisLogin {
+                    DownloadDiagnosisLogin(username: credentials.username, password: credentials.password) { signedIn in
+                        didResolveDiagnosisLogin = true
+                        if signedIn {
+                            store.send(.appDelegate(.onLaunchFinish))
+                        }
+                    }
+                }
+            }
+            #endif
     }
 
     private var store: StoreOf<AppReducer> { appDelegate.store }

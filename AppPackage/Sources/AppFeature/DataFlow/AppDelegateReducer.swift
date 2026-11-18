@@ -46,12 +46,23 @@ struct AppDelegateReducer {
 // MARK: AppDelegate
 public class AppDelegate: UIResponder, UIApplicationDelegate {
     let store: StoreOf<AppReducer>
+    #if DEBUG && targetEnvironment(simulator)
+    let diagnosisCredentials: (username: String, password: String)?
+    #endif
 
     public override init() {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
         let configuration = UITestAutomation.prepare(environment: environment)
         let diagnosesDownloads = environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1"
+        #if targetEnvironment(simulator)
+        if diagnosesDownloads, let username = environment["EHPANDA_DIAG_LOGIN_ID"],
+           let password = environment["EHPANDA_DIAG_LOGIN_PASSWORD"], !username.isEmpty, !password.isEmpty {
+            diagnosisCredentials = (username, password)
+        } else {
+            diagnosisCredentials = nil
+        }
+        #endif
         if diagnosesDownloads {
             UITestAutomation.applyFirstLaunchPreset(.answered)
             @Shared(.setting) var setting
@@ -79,6 +90,11 @@ public class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication, didFinishLaunchingWithOptions
             launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        if diagnosisCredentials != nil {
+            return true
+        }
+        #endif
         if !AppInfo.isTesting {
             store.send(.appDelegate(.onLaunchFinish))
         }

@@ -1,6 +1,13 @@
 public import AppModels
 public import Foundation
+#if DEBUG && targetEnvironment(simulator)
+import OSLog
+#endif
 import Synchronization
+
+#if DEBUG && targetEnvironment(simulator)
+private let diagnosisLogger = Logger(subsystem: "app.ehpanda.diagnosis", category: "background-transfer")
+#endif
 
 public struct DownloadPageTaskContext: Equatable, Sendable {
     public let gid: String
@@ -320,6 +327,11 @@ private actor BackgroundPageDownloadSession {
         onBytesWritten: @escaping DownloadPageTransferProgressHandler
     ) async throws -> DownloadPageTransfer {
         let task = session.downloadTask(with: request)
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+            diagnosisLogger.notice("DL_DIAG transfer_started page=\(context.pageIndex) task=\(task.taskIdentifier)")
+        }
+        #endif
         await taskStore.record(
             taskIdentifier: task.taskIdentifier,
             gid: context.gid,
@@ -473,6 +485,19 @@ private final class BackgroundPageDownloadDelegate: NSObject, URLSessionDownload
         didCompleteWithError error: any Error?
     ) {
         guard let error else { return }
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["EHPANDA_DOWNLOAD_DIAGNOSIS"] == "1" {
+            let nsError = error as NSError
+            let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+            let urlError = nsError.domain == NSURLErrorDomain
+            diagnosisLogger.notice(
+                """
+                DL_DIAG delegate_error task=\(task.taskIdentifier) url_error=\(urlError) \
+                code=\(nsError.code) underlying=\(underlying?.code ?? 0)
+                """
+            )
+        }
+        #endif
         complete(taskIdentifier: task.taskIdentifier, error: error)
     }
 
