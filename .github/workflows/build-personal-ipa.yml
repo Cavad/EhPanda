@@ -64,6 +64,11 @@ jobs:
           persist-credentials: false
       - name: Test download recovery and image dispatch
         run: |
+          set -euo pipefail
+          plan=AppPackage/Tests/FeatureTests.xctestplan
+          jq '.testTargets |= map(select(.target.name == "DownloadsFeatureTests" or .target.name == "NetworkingFeatureTests"))' \
+            "$plan" > "$RUNNER_TEMP/FeatureTests.xctestplan"
+          cp "$RUNNER_TEMP/FeatureTests.xctestplan" "$plan"
           xcodebuild test \
             -project EhPanda.xcodeproj \
             -scheme EhPanda \

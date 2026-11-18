@@ -279,8 +279,6 @@ extension GalleryScenarios {
             state.previewURLs = Dictionary(uniqueKeysWithValues: (1...gallery.pageCount).compactMap { page in
                 previewURL(page).map({ (page, $0) })
             })
-        } else {
-            state.loadingState = .loading
         }
         return AnyView(NavigationStack {
             PreviewsView(store: Store(initialState: state, reducer: PreviewsReducer.init))

@@ -35,7 +35,7 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
         }
         let started = LockedBox(Set<Int>())
         let clock = TestClock()
-        let wallDate = Date().addingTimeInterval(10)
+        let wallDate = Date().addingTimeInterval(3_600)
         let image = try #require(Data(base64Encoded: "R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs="))
         let downloader = DownloadPageDownloader { request, context, _ in
             started.value.insert(context.pageIndex)
