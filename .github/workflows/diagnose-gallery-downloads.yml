@@ -16,6 +16,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Start the iPhone simulator
+        run: |
+          set -euo pipefail
+          device=$(xcrun simctl list devices available -j | jq -er \
+            '.devices["com.apple.CoreSimulator.SimRuntime.iOS-27-0"][] | select(.name == "iPhone Air") | .udid')
+          xcrun simctl boot "$device"
       - name: Build the app for iPhone Simulator
         run: |
           set -euo pipefail
@@ -27,8 +33,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -quiet
       - name: Run the app with real transfers
         env:
-          EHPANDA_DIAG_LOGIN_ID: ${{ secrets.EHPANDA_DIAG_LOGIN_ID }}
-          EHPANDA_DIAG_LOGIN_PASSWORD: ${{ secrets.EHPANDA_DIAG_LOGIN_PASSWORD }}
+          EHPANDA_AUTOMATION_IPB_MEMBER_ID: ${{ secrets.EHPANDA_DIAG_SESSION_ID }}
+          EHPANDA_AUTOMATION_IPB_PASS_HASH: ${{ secrets.EHPANDA_DIAG_SESSION_HASH }}
+          EHPANDA_AUTOMATION_IGNEOUS: ${{ secrets.EHPANDA_DIAG_SESSION_IGNEOUS }}
         run: |
           python3 Scripts/diagnose-gallery-downloads.py \
             "$RUNNER_TEMP/EhPandaDiagnosis/Build/Products/Debug-iphonesimulator/EhPanda.app" \

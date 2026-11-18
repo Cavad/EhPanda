@@ -102,10 +102,10 @@ def run_gallery(device, bundle, data, output, host, gallery, expected_count, log
 def main():
     app, output = map(Path, sys.argv[1:])
     output.mkdir(parents=True, exist_ok=True)
-    login = {f"SIMCTL_CHILD_{key}": os.environ.pop(key, "")
-             for key in ("EHPANDA_DIAG_LOGIN_ID", "EHPANDA_DIAG_LOGIN_PASSWORD")}
+    login = {f"SIMCTL_CHILD_EHPANDA_AUTOMATION_{key}": os.environ.pop(f"EHPANDA_AUTOMATION_{key}", "")
+             for key in ("IPB_MEMBER_ID", "IPB_PASS_HASH", "IGNEOUS")}
     if not all(login.values()):
-        login = {}
+        raise SystemExit("The ExHentai test requires a complete temporary session.")
     with (app / "Info.plist").open("rb") as handle:
         bundle = plistlib.load(handle)["CFBundleIdentifier"]
     runtimes = json.loads(simctl("list", "devices", "available", "-j", capture_output=True).stdout)["devices"]
@@ -115,7 +115,7 @@ def main():
     if device["state"] != "Booted":
         simctl("boot", udid)
     simctl("bootstatus", udid, "-b")
-    for host in ("e-hentai", "exhentai"):
+    for host in ("exhentai",):
         simctl("install", udid, str(app))
         data = Path(simctl("get_app_container", udid, bundle, "data", capture_output=True).stdout.strip())
         for index, (expected, gallery) in enumerate(GALLERIES):
