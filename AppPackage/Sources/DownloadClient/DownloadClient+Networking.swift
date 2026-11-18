@@ -180,50 +180,18 @@ extension DownloadCoordinator {
             } onCancel: {
                 attempt.cancel()
             }
-        } catch let error as AppError {
-            throw error
-        } catch is CancellationError {
-            throw pageTransferCancellationError(
-                gid: context.gid,
-                pageIndex: context.pageIndex
-            )
-        } catch let error as URLError
-                    where error.code == .cancelled {
-            throw pageTransferCancellationError(
-                gid: context.gid,
-                pageIndex: context.pageIndex
-            )
         } catch {
-            if Self.isCancellationLikeError(error) {
-                throw pageTransferCancellationError(
-                    gid: context.gid,
-                    pageIndex: context.pageIndex
-                )
+            // A pause or group cancellation cancels this parent task. A URLSession or watchdog
+            // cancellation while the parent is active belongs to one page and can be retried.
+            try Task.checkCancellation()
+            if let error = error as? AppError {
+                throw error
             }
-            if error is URLError {
+            if error is URLError || Self.isCancellationLikeError(error) {
                 throw AppError.networkingFailed
             }
             throw AppError.unknown
         }
-    }
-
-    /// What a cancellation-shaped end of one page attempt actually means.
-    ///
-    /// The order is the whole content. `Task.isCancelled` FIRST: the caller cancelled us, and a
-    /// pause or an expiry sweep must keep propagating as `CancellationError` exactly as before —
-    /// abandonment is the only path that may convert a cancelled attempt into a failure. Then the
-    /// entry's `isAbandoned`, set by the sweep in the same synchronous stretch that cancelled the
-    /// task: a network that stopped delivering, reported as the retryable `.networkingFailed` every
-    /// other transport failure of a page already maps to. Anything else is a system-side cancel and
-    /// keeps its old meaning.
-    private func pageTransferCancellationError(gid: String, pageIndex: Int) -> any Error {
-        if Task.isCancelled {
-            return CancellationError()
-        }
-        guard inFlightPageTransfers[gid]?[pageIndex]?.isAbandoned == true else {
-            return CancellationError()
-        }
-        return AppError.networkingFailed
     }
 
     public func withRetry<T>(

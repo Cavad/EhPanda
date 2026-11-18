@@ -36,10 +36,11 @@ extension Parser {
         let token: String
     }
 
-    public struct GalleryNormalImageInfo {
+    public struct GalleryNormalImageInfo: Sendable {
         public let index: Int
         public let imageURL: URL
         public let originalImageURL: URL?
+        public let skipServerIdentifier: String?
     }
 
     public struct RatingResult {

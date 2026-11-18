@@ -4,6 +4,7 @@ public import Foundation
 import IssueReporting
 import NetworkingFeature
 import OSLogExt
+import ParserFeature
 
 private let logger = Logger(category: .init(describing: DownloadCoordinator.self))
 
@@ -209,10 +210,7 @@ extension DownloadCoordinator {
         requiredPageIndices: [Int]
     ) async throws -> ResolvedSource {
         // The only producer of a payload that reaches here, `fetchLatestPayload`, already guards this
-        // optional with the same error, so restating the contract where it is consumed states it
-        // locally instead of trapping on it. The sibling `resolvedImageSource`'s `?? payload.host.url`
-        // fallback is deliberately not copied: retargeting a thumbnail request at the host root is a
-        // behavior change, and this guard is behavior-identical.
+        // optional with the same error, so restating the contract here avoids a trap.
         guard let galleryURL = payload.gallery.galleryURL else { throw AppError.notFound }
         let requiredPageNumbers = Array(
             Set(requiredPageIndices.map {
@@ -768,33 +766,14 @@ extension DownloadCoordinator {
             guard let thumbnailURL = thumbnailURLs[page] else {
                 throw AppError.notFound
             }
-            if let failover {
-                let (imageURLs, _) = try await GalleryNormalImageURLRefetchRequest(
-                    host: payload.host,
-                    index: page,
-                    pageNum: 0,
-                    galleryURL: payload.gallery.galleryURL ?? payload.host.url,
-                    thumbnailURL: thumbnailURL,
-                    storedImageURL: failover.imageURL,
-                    urlSession: urlSession,
-                    allowsCellular: options.allowCellular
-                )
-                .response()
-                guard let imageURL = imageURLs[page] else {
-                    throw AppError.notFound
-                }
-                return .init(imageURL: imageURL, mpvSkipServerIdentifier: nil)
-            }
-            let (imageURLs, _) = try await GalleryNormalImageURLsRequest(
-                thumbnailURLs: [page: thumbnailURL],
-                urlSession: urlSession,
-                allowsCellular: options.allowCellular
+            let pageURL = imageViewerURL(thumbnailURL, skipServerIdentifier: failover?.skipServerIdentifier)
+            var request = GalleryNormalImageRequest(
+                index: page, pageURL: pageURL, urlSession: urlSession,
+                allowsCellular: options.allowCellular, attempts: 1
             )
-            .response()
-            guard let imageURL = imageURLs[page] else {
-                throw AppError.notFound
-            }
-            return .init(imageURL: imageURL, mpvSkipServerIdentifier: nil)
+            request.reloadsImageLink = true
+            let dispatch = try await request.response()
+            return .init(imageURL: dispatch.imageURL, skipServerIdentifier: dispatch.skipServerIdentifier)
 
         case .mpv(let mpvKey, let imageKeys):
             guard let gid = Int(payload.gallery.gid) else {
@@ -809,17 +788,28 @@ extension DownloadCoordinator {
                 index: page,
                 mpvKey: mpvKey,
                 mpvImageKey: imageKey,
-                skipServerIdentifier: failover?.mpvSkipServerIdentifier,
+                skipServerIdentifier: failover?.skipServerIdentifier,
                 urlSession: urlSession,
                 allowsCellular: options.allowCellular,
-                requiresSkipServerIdentifier: failover != nil
+                requiresSkipServerIdentifier: false
             )
             .response()
             return .init(
                 imageURL: response.imageURL,
-                mpvSkipServerIdentifier: response.skipServerIdentifier
+                skipServerIdentifier: response.skipServerIdentifier.isEmpty ? nil : response.skipServerIdentifier
             )
         }
+    }
+
+    func imageViewerURL(_ url: URL, skipServerIdentifier: String?) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        let key = Defaults.URL.Component.Key.skipServerIdentifier.rawValue
+        var query = (components.queryItems ?? []).filter({ $0.name != key })
+        if let skipServerIdentifier {
+            query.append(.init(name: key, value: skipServerIdentifier))
+        }
+        components.queryItems = query.isEmpty ? nil : query
+        return components.url ?? url
     }
 
     public func pendingPageIndices(

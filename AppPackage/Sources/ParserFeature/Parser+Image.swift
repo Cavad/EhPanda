@@ -1,19 +1,30 @@
 public import AppModels
+import AppTools
 public import Foundation
 public import Kanna
 
 extension Parser {
     // MARK: ImageURL
     public static func parseThumbnailURLs(doc: any HTMLDocument) throws -> [Int: URL] {
+        try parseThumbnailURLs(doc: doc, relativeTo: nil)
+    }
+
+    public static func parseThumbnailURLs(doc: any HTMLDocument, relativeTo baseURL: URL?) throws -> [Int: URL] {
         var thumbnailURLs = [Int: URL]()
 
         guard let gdtNode = doc.at_xpath("//div [@id='gdt']")
         else { throw AppError.parseFailed }
 
-        for aLink in gdtNode.xpath("a") {
+        for aLink in gdtNode.xpath(".//a[@href]") {
             guard let href = aLink["href"],
-                  let thumbnailURL = URL(string: href),
-                  let divNode = aLink.at_xpath(".//div[@title and @style]"),
+                  let thumbnailURL = URL(string: href, relativeTo: baseURL)?.absoluteURL
+            else { continue }
+            if let route = GalleryURLParser.parse(thumbnailURL),
+               route.isGalleryImageURL, let page = route.pageIndex, page > 0 {
+                thumbnailURLs[page] = thumbnailURL
+                continue
+            }
+            guard let divNode = aLink.at_xpath(".//div[@title and @style]"),
                   let title = divNode["title"],
                   let page = parseGTX00IndexFromTitle(from: title)
             else { continue }
@@ -24,27 +35,21 @@ extension Parser {
         return thumbnailURLs
     }
 
-    public static func parseGalleryNormalImageURL(doc: any HTMLDocument, index: Int) throws -> GalleryNormalImageInfo {
+    public static func parseGalleryNormalImageURL(
+        doc: any HTMLDocument, index: Int, relativeTo baseURL: URL? = nil
+    ) throws -> GalleryNormalImageInfo {
         guard let i3Node = doc.at_xpath("//div [@id='i3']"),
               let imageURLString = i3Node.at_css("img")?["src"],
-              let imageURL = URL(string: imageURLString)
+              let imageURL = URL(string: imageURLString, relativeTo: baseURL)?.absoluteURL
         else { throw AppError.parseFailed }
 
-        guard let i7Node = doc.at_xpath("//div [@id='i7']"),
-              let originalImageURLString = i7Node.at_xpath("//a")?["href"],
-              let originalImageURL = URL(string: originalImageURLString)
-        else {
-            return GalleryNormalImageInfo(
-                index: index,
-                imageURL: imageURL,
-                originalImageURL: nil
-            )
-        }
-
+        let originalImageURL = doc.at_xpath("//div[@id='i7']//a")?["href"]
+            .flatMap({ URL(string: $0, relativeTo: baseURL)?.absoluteURL })
         return GalleryNormalImageInfo(
             index: index,
             imageURL: imageURL,
-            originalImageURL: originalImageURL
+            originalImageURL: originalImageURL,
+            skipServerIdentifier: skipServerIdentifier(doc: doc)
         )
     }
 

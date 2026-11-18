@@ -4,10 +4,17 @@ public import Kanna
 
 extension Parser {
     public static func parseSkipServerIdentifier(doc: any HTMLDocument) throws -> String {
-        guard let text = doc.at_xpath("//div [@id='i6']")?.at_xpath("//a [@id='loadfail']")?["onclick"],
-              let rangeA = text.range(of: "nl('"), let rangeB = text.range(of: "')")
-        else { throw AppError.parseFailed }
-        return .init(text[rangeA.upperBound..<rangeB.lowerBound])
+        guard let identifier = skipServerIdentifier(doc: doc) else { throw AppError.parseFailed }
+        return identifier
+    }
+
+    static func skipServerIdentifier(doc: any HTMLDocument) -> String? {
+        guard let text = doc.at_xpath("//a[@id='loadfail']")?["onclick"],
+              let opening = text.range(of: "nl('"),
+              let closing = text[opening.upperBound...].range(of: "')"),
+              opening.upperBound < closing.lowerBound
+        else { return nil }
+        return String(text[opening.upperBound..<closing.lowerBound])
     }
 
     public static func parseAPIKey(doc: any HTMLDocument) throws -> String {

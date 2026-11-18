@@ -52,7 +52,9 @@ struct DownloadInspectorView: View {
                                 let pages = inspection.pages.filter({ $0.status == status })
                                 DownloadInspectorPageGroupRow(
                                     status: status,
-                                    pages: pages
+                                    pages: pages,
+                                    galleryFailure: status == .failed && inspection.download.displayStatus == .error
+                                        ? inspection.download.lastError : nil
                                 )
                             }
                         }
@@ -156,6 +158,7 @@ struct DownloadInspectorPageGroupRow: View {
 
     let status: DownloadPageStatus
     let pages: [DownloadPageInspection]
+    var galleryFailure: DownloadFailure? = nil
 
     private var countAnimation: Animation? {
         reduceMotion ? nil : .easeInOut(duration: 0.2)
@@ -167,6 +170,14 @@ struct DownloadInspectorPageGroupRow: View {
             return String(localized: .noPages)
         }
         return Self.formattedPageRanges(indices)
+    }
+
+    private var failureMessages: [String] {
+        let messages = Set(pages.compactMap({ $0.failure?.appError.localizedDescription }))
+        if messages.isEmpty, let galleryFailure {
+            return [galleryFailure.appError.localizedDescription]
+        }
+        return messages.sorted()
     }
 
     var body: some View {
@@ -192,6 +203,13 @@ struct DownloadInspectorPageGroupRow: View {
                     .lineLimit(nil)
                     .textSelection(.enabled)
                     .animation(countAnimation, value: pageNumbersText)
+
+                ForEach(failureMessages, id: \.self) { message in
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
         }
         .padding(.vertical, 4)

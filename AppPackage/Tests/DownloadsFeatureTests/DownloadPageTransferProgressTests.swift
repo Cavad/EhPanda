@@ -355,8 +355,7 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
     }
 
     /// A caller's cancellation — a pause, the expiry's sweep, a group cancel — still surfaces as
-    /// `CancellationError`. Abandonment is the ONLY path that converts a cancelled attempt into a
-    /// retryable failure, and no sweep is involved here at all.
+    /// `CancellationError`. The transport and watchdog paths retry only while the caller remains active.
     @Test
     func aCallerCancelledTransferStillSurfacesAsCancellation() async throws {
         let gallery = Self.makeGallery(gid: "240090")

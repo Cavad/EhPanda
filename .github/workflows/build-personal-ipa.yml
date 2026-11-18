@@ -32,6 +32,7 @@ jobs:
             -skipMacroValidation \
             -skipPackagePluginValidation \
             -onlyUsePackageVersionsFromResolvedFile \
+            CURRENT_PROJECT_VERSION=164 \
             CODE_SIGN_IDENTITY= CODE_SIGN_ENTITLEMENTS= \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             GCC_OPTIMIZATION_LEVEL=s SWIFT_OPTIMIZATION_LEVEL=-O
@@ -40,14 +41,37 @@ jobs:
           set -euo pipefail
           app="$RUNNER_TEMP/EhPanda.xcarchive/Products/Applications/EhPanda.app"
           version="$(plutil -extract CFBundleShortVersionString raw -o - "$app/Info.plist")"
+          build="$(plutil -extract CFBundleVersion raw -o - "$app/Info.plist")"
           [[ "$version" == 3.0.0 ]]
-          output="$RUNNER_TEMP/ipa/EhPanda-$version.ipa"
+          [[ "$build" == 164 ]]
+          output="$RUNNER_TEMP/ipa/EhPanda-$version-build$build.ipa"
           bash actions-tool/package-channel.sh "$app" github "$output"
           unzip -tq "$output"
           test -x "$app/$(plutil -extract CFBundleExecutable raw -o - "$app/Info.plist")"
       - uses: actions/upload-artifact@v7
         with:
-          name: EhPanda-3.0.0-unsigned
-          path: ${{ runner.temp }}/ipa/EhPanda-3.0.0.ipa
+          name: EhPanda-3.0.0-build164-unsigned
+          path: ${{ runner.temp }}/ipa/EhPanda-3.0.0-build164.ipa
           if-no-files-found: error
           retention-days: 7
+
+  download-regressions:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test download recovery and image dispatch
+        run: |
+          xcodebuild test \
+            -project EhPanda.xcodeproj \
+            -scheme EhPanda \
+            -testPlan FeatureTests \
+            -destination 'platform=iOS Simulator,name=iPhone Air,OS=latest' \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -only-testing:DownloadsFeatureTests/DownloadImageParsingTests \
+            -only-testing:DownloadsFeatureTests/DownloadPageTransferProgressTests \
+            -only-testing:NetworkingFeatureTests/ImageRequestBaselineTests

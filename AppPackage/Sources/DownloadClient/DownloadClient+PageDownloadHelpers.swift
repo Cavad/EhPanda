@@ -2,6 +2,7 @@ import AppModels
 import AppTools
 import Foundation
 import NetworkingFeature
+import ParserFeature
 
 // MARK: - Download Single Page
 extension DownloadCoordinator {
@@ -13,7 +14,7 @@ extension DownloadCoordinator {
         guard let source = context.source else {
             throw AppError.notFound
         }
-        let attempts = context.options.autoRetryFailedPages ? 3 : 1
+        let attempts = context.options.autoRetryFailedPages ? 4 : 1
         var capturedError: AppError = .unknown
         var failover: ResolvedImageSource?
         var failedImageURLs = Set<URL>()
@@ -23,7 +24,7 @@ extension DownloadCoordinator {
             var attemptedImageURL: URL?
             do {
                 let resolved: ResolvedImageSource
-                if attempt == 2 {
+                if attempt == 3 {
                     guard !failedImageURLs.isEmpty, Self.allowsMainSiteRetry(after: capturedError),
                           let mainSiteImage = try await resolveMainSiteImage(
                               page: index, context: context, source: source
@@ -37,7 +38,9 @@ extension DownloadCoordinator {
                         payload: context.payload,
                         options: context.options,
                         source: source,
-                        failover: failover
+                        // Use the site's reload token once. A further retry uses an uncached
+                        // ordinary dispatch before requesting direct delivery.
+                        failover: attempt == 1 ? failover : nil
                     )
                 }
                 failover = resolved
@@ -49,6 +52,9 @@ extension DownloadCoordinator {
                 ) {
                     return result
                 }
+                // A fresh dispatch can hand out the exact same signed URL. Move on to another
+                // route without waiting for that transfer to time out again.
+                guard !failedImageURLs.contains(resolved.imageURL) else { continue }
                 attemptedImageURL = resolved.imageURL
                 return try await downloadAndSavePage(
                     index: index,
@@ -109,21 +115,14 @@ extension DownloadCoordinator {
             viewerURL = payload.host.url.appending(path: "s/\(key)/\(payload.gallery.gid)-\(page)")
         }
 
-        guard var components = URLComponents(url: viewerURL, resolvingAgainstBaseURL: false) else { return nil }
-        let skipServerKey = Defaults.URL.Component.Key.skipServerIdentifier.rawValue
-        let query = (components.queryItems ?? []).filter({ $0.name != skipServerKey })
-        components.queryItems = query + [.init(name: skipServerKey, value: "1")]
-        guard let directViewerURL = components.url else { return nil }
-
-        let result = try await GalleryNormalImageURLsRequest(
-            thumbnailURLs: [page: directViewerURL],
-            urlSession: urlSession,
-            allowsCellular: context.options.allowCellular,
-            attempts: 1
+        let directViewerURL = imageViewerURL(viewerURL, skipServerIdentifier: "1")
+        var request = GalleryNormalImageRequest(
+            index: page, pageURL: directViewerURL, urlSession: urlSession,
+            allowsCellular: context.options.allowCellular, attempts: 1
         )
-        .response()
-        guard let imageURL = result.imageURLs[page], imageURL.scheme == "https", imageURL.host() != nil
-        else { return nil }
+        request.reloadsImageLink = true
+        let imageURL = try await request.response().imageURL
+        guard imageURL.scheme == "https", imageURL.host() != nil else { return nil }
         return .init(imageURL: imageURL)
     }
 

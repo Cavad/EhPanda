@@ -48,9 +48,7 @@ struct InFlightPageTransfer: Sendable {
     /// sweeps report it once rather than every ten seconds.
     var stallLogged = false
     /// Whether the heartbeat's sweep gave up on this attempt. Set in the same synchronous stretch
-    /// that cancels it, and read by `rawPageDownloadResponse` to tell an abandonment from the
-    /// caller's own cancellation — the one distinction that decides whether the page retries or the
-    /// pause propagates.
+    /// that cancels it, so subsequent sweeps and callbacks ignore the attempt while it unwinds.
     var isAbandoned = false
     /// The attempt's own task: the handle the sweep cancels, nil between attempts.
     ///
@@ -232,7 +230,8 @@ extension DownloadCoordinator {
     /// and can ask the main site for direct delivery after peer attempts fail.
     ///
     /// Two consequences, both accepted rather than special-cased:
-    /// - With auto-retry on, the app tries another peer and can make one main-site request.
+    /// - With auto-retry on, the app tries the viewer's reload link, a fresh ordinary dispatch,
+    ///   and, when available, one main-site request.
     ///   With auto-retry off, the page stops after the first failed attempt.
     /// - A transfer the SYSTEM has merely deferred — a discretionary background transfer waiting
     ///   its turn — is treated exactly like a hung one. That is inside the sixty-second rule as

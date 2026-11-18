@@ -256,13 +256,13 @@ public actor DownloadCoordinator {
 
     public struct ResolvedImageSource: Sendable {
         public let imageURL: URL
-        public var mpvSkipServerIdentifier: String?
+        public let skipServerIdentifier: String?
         public init(
             imageURL: URL,
-            mpvSkipServerIdentifier: String? = nil
+            skipServerIdentifier: String? = nil
         ) {
             self.imageURL = imageURL
-            self.mpvSkipServerIdentifier = mpvSkipServerIdentifier
+            self.skipServerIdentifier = skipServerIdentifier
         }
     }
 

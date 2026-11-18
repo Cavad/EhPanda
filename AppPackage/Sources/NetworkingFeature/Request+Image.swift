@@ -2,7 +2,7 @@ public import AppModels
 import AppTools
 public import Foundation
 import Kanna
-import ParserFeature
+public import ParserFeature
 
 // MARK: Response Types
 public struct GalleryMPVImageURLResponse: Sendable {
@@ -72,7 +72,50 @@ public struct ThumbnailURLsRequest: Request {
         let (data, _) = try await fetch(request, in: urlSession)
         do {
             let document = try htmlDocument(data: data)
-            return try parseResponse(doc: document, Parser.parseThumbnailURLs)
+            return try parseResponse(doc: document) {
+                try Parser.parseThumbnailURLs(doc: $0, relativeTo: galleryURL)
+            }
+        } catch {
+            throw mapAppError(error: error)
+        }
+    }
+}
+
+public struct GalleryNormalImageRequest: Request, Sendable {
+    public init(
+        index: Int,
+        pageURL: URL,
+        urlSession: URLSession = .shared,
+        allowsCellular: Bool = true,
+        attempts: Int = 4
+    ) {
+        self.index = index
+        self.pageURL = pageURL
+        self.urlSession = urlSession
+        self.allowsCellular = allowsCellular
+        self.attempts = attempts
+    }
+
+    public let index: Int
+    public let pageURL: URL
+    public let urlSession: URLSession
+    public var reloadsImageLink = false
+    private let allowsCellular: Bool
+    private let attempts: Int
+
+    public func response() async throws(AppError) -> Parser.GalleryNormalImageInfo {
+        var request = urlRequest(url: pageURL, allowsCellular: allowsCellular)
+        if reloadsImageLink {
+            // HTML can outlive its signed image URL in URLCache. Keep the response's reload token
+            // paired with the same image URL so an unreachable peer can be skipped directly.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
+        let (data, _) = try await fetch(request, in: urlSession, attempts: attempts)
+        do {
+            let document = try htmlDocument(data: data)
+            return try parseResponse(doc: document) {
+                try Parser.parseGalleryNormalImageURL(doc: $0, index: index, relativeTo: pageURL)
+            }
         } catch {
             throw mapAppError(error: error)
         }
@@ -105,10 +148,14 @@ public struct GalleryNormalImageURLsRequest: Request, Sendable {
     }
 
     private func fanOutResponse() async throws -> (imageURLs: [Int: URL], originalImageURLs: [Int: URL]) {
-        try await withThrowingTaskGroup(of: NormalImageInfo.self) { group in
+        try await withThrowingTaskGroup(of: Parser.GalleryNormalImageInfo.self) { group in
             for (index, url) in thumbnailURLs {
                 group.addTask { [self] in
-                    try await normalImageInfo(index: index, url: url)
+                    try await GalleryNormalImageRequest(
+                        index: index, pageURL: url, urlSession: urlSession,
+                        allowsCellular: allowsCellular, attempts: attempts
+                    )
+                    .response()
                 }
             }
 
@@ -122,25 +169,6 @@ public struct GalleryNormalImageURLsRequest: Request, Sendable {
         }
     }
 
-    private func normalImageInfo(index: Int, url: URL) async throws -> NormalImageInfo {
-        let request = urlRequest(url: url, allowsCellular: allowsCellular)
-        let (data, _) = try await fetch(request, in: urlSession, attempts: attempts)
-        let document = try htmlDocument(data: data)
-        let info = try parseResponse(doc: document) {
-            try Parser.parseGalleryNormalImageURL(doc: $0, index: index)
-        }
-        return NormalImageInfo(
-            index: info.index,
-            imageURL: info.imageURL,
-            originalImageURL: info.originalImageURL
-        )
-    }
-}
-
-private struct NormalImageInfo: Sendable {
-    let index: Int
-    let imageURL: URL
-    let originalImageURL: URL?
 }
 
 public struct ImageURLRefetchResult: Sendable {

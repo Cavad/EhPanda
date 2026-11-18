@@ -260,7 +260,7 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
         let peerB = try #require(URL(string: "https://peer-b.hath.network/\(sessionID).gif"))
         let origin = try #require(URL(string: "https://ehgt.org/\(sessionID).gif"))
         let transfers = LockedBox([URL]())
-        let directDispatchCount = LockedBox(0)
+        let dispatches = LockedBox([String?]())
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SharedSessionStubURLProtocol.self]
@@ -272,10 +272,11 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
             if url.path == viewer.path {
                 let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
                 let skip = query?.first(where: { $0.name == "nl" })?.value
+                #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
+                dispatches.value.append(skip)
                 let imageURL: URL
                 switch skip {
                 case "1":
-                    directDispatchCount.value += 1
                     imageURL = origin
                 case "peer-token":
                     imageURL = peerB
@@ -292,7 +293,9 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
             }
             #expect(usesMPV)
             #expect(url == Defaults.URL.api(host: .ehentai))
-            let imageURL = requestBodyJSONObject(from: request)?["nl"] == nil ? peerA : peerB
+            let skip = requestBodyJSONObject(from: request)?["nl"] as? String
+            dispatches.value.append(skip)
+            let imageURL = skip == nil ? peerA : peerB
             let data = try JSONSerialization.data(withJSONObject: ["i": imageURL.absoluteString, "s": "peer-token"])
             return (try makeResponse(url: url, contentType: "application/json"), data)
         }
@@ -302,7 +305,7 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
         let downloader = DownloadPageDownloader { request, _, _ in
             let url = try #require(request.url)
             transfers.value.append(url)
-            if url == peerA { throw URLError(.timedOut) }
+            if url == peerA { throw URLError(.cancelled) }
             let fileURL = rootURL.appending(path: UUID().uuidString)
             try imageBytes.write(to: fileURL)
             let response = try #require(HTTPURLResponse(
@@ -335,13 +338,13 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
             #expect(result.imageURL == origin)
             #expect(try Data(contentsOf: rootURL.appending(path: result.relativePath)) == imageBytes)
             #expect(transfers.value == [peerA, peerB, origin])
-            #expect(directDispatchCount.value == 1)
+            #expect(dispatches.value == [nil, "peer-token", nil, "1"])
         } else {
             await #expect(throws: AppError.networkingFailed) {
                 try await manager.downloadPage(index: 1, context: context, preferredRelativePath: nil)
             }
             #expect(transfers.value == [peerA])
-            #expect(directDispatchCount.value == 0)
+            #expect(dispatches.value == [nil])
         }
     }
 
@@ -371,7 +374,8 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
             let imageURL = skipServer == nil
                 ? "https://example.com/server-a.jpg"
                 : "https://example.com/server-b.jpg"
-            let data = try JSONSerialization.data(withJSONObject: ["i": imageURL, "s": "42"])
+            let dispatch = skipServer == nil ? ["i": imageURL, "s": "42"] : ["i": imageURL]
+            let data = try JSONSerialization.data(withJSONObject: dispatch)
             return (
                 try #require(HTTPURLResponse(
                     url: request.url ?? Defaults.URL.api(host: .ehentai),
@@ -404,8 +408,9 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
 
         #expect(receivedSkipServerTokens.value == [nil, "42"])
         #expect(first.imageURL.absoluteString == "https://example.com/server-a.jpg")
-        #expect(first.mpvSkipServerIdentifier == "42")
+        #expect(first.skipServerIdentifier == "42")
         #expect(second.imageURL.absoluteString == "https://example.com/server-b.jpg")
+        #expect(second.skipServerIdentifier == nil)
     }
 
 }

@@ -66,6 +66,28 @@ struct ImageRequestBaselineTests {
     }
 
     @Test
+    func thumbnailURLsRecoverPageNumbersFromWrappedLinksWithoutThumbnailMetadata() async throws {
+        let galleryURL = try #require(URL(string: "https://e-hentai.org/g/123/token/"))
+        let url = URLUtil.detailPage(url: galleryURL, pageNum: 1)
+        let html = Data("""
+            <div id="gdt">
+              <div><a href="/s/first/123-41"><img src="placeholder.gif"></a></div>
+              <a href="/s/second/123-42"><div title="Page 1: wrong" style="width:1px"></div></a>
+            </div>
+            <a href="/s/outside/123-43">Outside the gallery grid</a>
+            """.utf8)
+        let (session, handle) = makeStubbedSession(script: StubScript([url: [.http(status: 200, data: html)]]))
+        defer { cleanUp(session: session, handle: handle) }
+
+        let thumbnails = try await ThumbnailURLsRequest(galleryURL: galleryURL, pageNum: 1, urlSession: session)
+            .response()
+
+        #expect(thumbnails.keys.sorted() == [41, 42])
+        #expect(thumbnails[41] == URL(string: "https://e-hentai.org/s/first/123-41"))
+        #expect(thumbnails[42] == URL(string: "https://e-hentai.org/s/second/123-42"))
+    }
+
+    @Test
     func normalImageFanOutRestoresOriginalIndexes() async throws {
         let first = try #require(URL(string: "https://e-hentai.org/s/first/123-1"))
         let second = try #require(URL(string: "https://e-hentai.org/s/second/123-2"))

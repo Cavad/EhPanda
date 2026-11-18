@@ -224,7 +224,7 @@ public struct Setting: Codable, Equatable, Sendable, MigratableModel {
     }
 
     // Downloads
-    public static let downloadThreadLimitDefaultValue = 1
+    public static let downloadThreadLimitDefaultValue = 2
     public static let downloadAllowCellularDefaultValue = true
     public static let downloadAutoRetryFailedPagesDefaultValue = true
 
