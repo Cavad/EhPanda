@@ -1,0 +1,41 @@
+name: Reproduce the old last-page stall
+
+on:
+  push:
+    branches: [codex/last-page-stall-control]
+
+permissions:
+  contents: read
+
+jobs:
+  stall-control:
+    runs-on: xcode-27
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check that build 166 misses the idle deadline
+        run: |
+          set -euo pipefail
+          plan=AppPackage/Tests/FeatureTests.xctestplan
+          jq '.testTargets |= map(select(.target.name == "DownloadsFeatureTests"))' \
+            "$plan" > "$RUNNER_TEMP/FeatureTests.xctestplan"
+          cp "$RUNNER_TEMP/FeatureTests.xctestplan" "$plan"
+          log="$RUNNER_TEMP/stall-control.log"
+          result="$RUNNER_TEMP/StallControl.xcresult"
+          if xcodebuild test \
+            -project EhPanda.xcodeproj -scheme EhPanda -testPlan FeatureTests \
+            -destination 'platform=iOS Simulator,name=iPhone Air,OS=27.0' \
+            -resultBundlePath "$result" \
+            -skipMacroValidation -skipPackagePluginValidation -onlyUsePackageVersionsFromResolvedFile \
+            -only-testing:DownloadsFeatureTests/DownloadPageTransferProgressTests/duplicateOrOlderByteCountsDoNotKeepTheLastPageActive \
+            > "$log" 2>&1; then
+            tail -100 "$log"
+            exit 1
+          fi
+          if ! grep -E 'Expectation failed:.*isTransferring' "$log"; then
+            tail -100 "$log"
+            exit 1
+          fi
+          xcrun xcresulttool get test-results summary --path "$result"
