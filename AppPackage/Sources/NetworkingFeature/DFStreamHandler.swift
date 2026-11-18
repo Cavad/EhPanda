@@ -33,6 +33,10 @@ private extension DFStreamEventHandler {
                     request.request,
                     didFailWithError: err
                 )
+                // A rejected certificate ends the load. Reading on would deliver the body of an
+                // untrusted response after the failure the client has already been told about.
+                request.stop()
+                return
             }
         }
 
@@ -179,16 +183,17 @@ private extension DFStreamEventHandler {
     }
 
     func errorOccurred(_ stream: Stream) {
-        if let err = stream.streamError as NSError? {
-            if !request.request.urlContainsImageURL {
-                let urlString = request.request.url?.absoluteString ?? ""
-                logger.error("\(stream, privacy: .public) Occurred error: \(err, privacy: .public) for: \(urlString).")
-            }
-            request.delegate?.dfRequest(
-                request.request,
-                didFailWithError: err
-            )
+        // The client is always told. A stream that fails without an error object used to report
+        // nothing, and a custom protocol owns its own timeouts, so the request waited forever.
+        let err = stream.streamError as NSError? ?? URLError(.networkConnectionLost) as NSError
+        if !request.request.urlContainsImageURL {
+            let urlString = request.request.url?.absoluteString ?? ""
+            logger.error("\(stream, privacy: .public) Occurred error: \(err, privacy: .public) for: \(urlString).")
         }
+        request.delegate?.dfRequest(
+            request.request,
+            didFailWithError: err
+        )
         request.stop()
     }
 

@@ -145,7 +145,13 @@ extension DownloadCoordinator {
         )
         request.timeoutInterval = retryingViewerConnection ? 30 : 20
         request.reloadsImageLink = true
-        let imageURL = try await request.response().imageURL
+        let viewerRequest = request
+        let imageURL = try await Self.withPageStageDeadline(
+            seconds: Self.viewerStageDeadline(retryingViewerConnection: retryingViewerConnection),
+            clock: clock
+        ) {
+            try await viewerRequest.response().imageURL
+        }
         guard imageURL.scheme == "https", imageURL.host() != nil else { return nil }
         return .init(imageURL: imageURL)
     }

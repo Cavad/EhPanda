@@ -764,6 +764,7 @@ extension DownloadCoordinator {
     ) async throws -> ResolvedImageSource {
         let session = retryingViewerConnection ? viewerRetrySession : urlSession
         let timeout: TimeInterval = retryingViewerConnection ? 30 : 20
+        let deadline = Self.viewerStageDeadline(retryingViewerConnection: retryingViewerConnection)
         switch source {
         case .normal(let thumbnailURLs):
             guard let thumbnailURL = thumbnailURLs[page] else {
@@ -776,7 +777,10 @@ extension DownloadCoordinator {
             )
             request.timeoutInterval = timeout
             request.reloadsImageLink = true
-            let dispatch = try await request.response()
+            let viewerRequest = request
+            let dispatch = try await Self.withPageStageDeadline(seconds: deadline, clock: clock) {
+                try await viewerRequest.response()
+            }
             return .init(imageURL: dispatch.imageURL, skipServerIdentifier: dispatch.skipServerIdentifier)
 
         case .mpv(let mpvKey, let imageKeys):
@@ -799,7 +803,10 @@ extension DownloadCoordinator {
             )
             request.timeoutInterval = timeout
             request.attempts = 1
-            let response = try await request.response()
+            let dispatchRequest = request
+            let response = try await Self.withPageStageDeadline(seconds: deadline, clock: clock) {
+                try await dispatchRequest.response()
+            }
             return .init(
                 imageURL: response.imageURL,
                 skipServerIdentifier: response.skipServerIdentifier.isEmpty ? nil : response.skipServerIdentifier

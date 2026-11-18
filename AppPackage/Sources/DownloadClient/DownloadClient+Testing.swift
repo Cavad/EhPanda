@@ -221,5 +221,15 @@ extension DownloadCoordinator {
             folderURL: folderURL
         )
     }
+
+    /// The viewer stage's deadline, so a suite can prove it returns for an operation that ignores
+    /// its cancellation, which no real request can be made to do on demand.
+    public nonisolated static func testingWithPageStageDeadline<Value: Sendable>(
+        seconds: TimeInterval,
+        clock: any Clock<Duration>,
+        operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        try await withPageStageDeadline(seconds: seconds, clock: clock, operation: operation)
+    }
 }
 #endif

@@ -298,7 +298,7 @@ public struct GalleryNormalImageURLRefetchRequest: Request {
 
 }
 
-public struct GalleryMPVImageURLRequest: Request {
+public struct GalleryMPVImageURLRequest: Request, Sendable {
     public init(
         host: GalleryHost,
         gid: Int,
