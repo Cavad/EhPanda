@@ -10,7 +10,7 @@ import sys
 import time
 
 
-GALLERIES = ((80, "4119423/b944b57311"), (88, "4133615/e84a09fe25"))
+GALLERIES = ((88, "4133615/e84a09fe25"),)
 TERMINAL = ("settled result=", "detail_failed ", "login_failed ")
 
 
@@ -31,7 +31,7 @@ def page_counts(data, gid):
     return 0, 0, []
 
 
-def run_gallery(device, bundle, data, output, host, gallery, expected_count, login, launch):
+def run_gallery(device, bundle, data, output, host, gallery, expected_count, login):
     gid = gallery.split("/")[0]
     url = f"https://{host}.org/g/{gallery}/"
     preflight = subprocess.run(
@@ -57,10 +57,7 @@ def run_gallery(device, bundle, data, output, host, gallery, expected_count, log
         offset = 0
         try:
             time.sleep(2)
-            if launch:
-                simctl("launch", "--terminate-running-process", device, bundle, env=environment, capture_output=True)
-            else:
-                simctl("openurl", device, url.replace("https://", "ehpanda://", 1), capture_output=True)
+            simctl("launch", "--terminate-running-process", device, bundle, env=environment, capture_output=True)
             while True:
                 time.sleep(3)
                 log.seek(offset)
@@ -118,8 +115,8 @@ def main():
     for host in ("exhentai",):
         simctl("install", udid, str(app))
         data = Path(simctl("get_app_container", udid, bundle, "data", capture_output=True).stdout.strip())
-        for index, (expected, gallery) in enumerate(GALLERIES):
-            report = run_gallery(udid, bundle, data, output, host, gallery, expected, login, launch=index == 0)
+        for expected, gallery in GALLERIES:
+            report = run_gallery(udid, bundle, data, output, host, gallery, expected, login)
             if any(event.startswith("login_failed ") or "code=quotaExceeded" in event or "code=ipBanned" in event
                    for event in report["events"]):
                 break
