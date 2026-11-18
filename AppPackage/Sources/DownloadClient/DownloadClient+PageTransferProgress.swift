@@ -1,5 +1,5 @@
 import BackgroundProcessingClient
-import Foundation
+public import Foundation
 import OSLogExt
 
 private let logger = Logger(category: .init(describing: DownloadCoordinator.self))
