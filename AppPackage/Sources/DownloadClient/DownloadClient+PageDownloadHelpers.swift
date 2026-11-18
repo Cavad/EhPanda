@@ -17,6 +17,8 @@ extension DownloadCoordinator {
         let attempts = context.options.autoRetryFailedPages ? 4 : 1
         var capturedError: AppError = .unknown
         var failover: ResolvedImageSource?
+        var didResolvePeerReload = false
+        var retryingViewerConnection = false
         var failedImageURLs = Set<URL>()
 
         for attempt in 0..<attempts {
@@ -27,21 +29,27 @@ extension DownloadCoordinator {
                 if attempt == 3 {
                     guard !failedImageURLs.isEmpty, Self.allowsMainSiteRetry(after: capturedError),
                           let mainSiteImage = try await resolveMainSiteImage(
-                              page: index, context: context, source: source
+                              page: index, context: context, source: source,
+                              retryingViewerConnection: retryingViewerConnection
                           ),
                           !failedImageURLs.contains(mainSiteImage.imageURL)
                     else { break }
                     resolved = mainSiteImage
                 } else {
+                    let reload = didResolvePeerReload ? nil : failover
                     resolved = try await resolvedImageSource(
                         index: index,
                         payload: context.payload,
                         options: context.options,
                         source: source,
-                        // Use the site's reload token once. A further retry uses an uncached
-                        // ordinary dispatch before requesting direct delivery.
-                        failover: attempt == 1 ? failover : nil
+                        failover: reload,
+                        retryingViewerConnection: retryingViewerConnection
                     )
+                    // A viewer timeout has yet to resolve a new peer. Keep its reload token for
+                    // another attempt. After a successful reload, use an ordinary dispatch.
+                    if reload?.skipServerIdentifier != nil {
+                        didResolvePeerReload = true
+                    }
                 }
                 failover = resolved
                 if let result = try await attemptResolvedCacheRestore(
@@ -67,6 +75,7 @@ extension DownloadCoordinator {
             } catch let error as AppError {
                 try Task.checkCancellation()
                 capturedError = error
+                retryingViewerConnection = attemptedImageURL == nil && error == .networkingFailed
                 if let attemptedImageURL {
                     failedImageURLs.insert(attemptedImageURL)
                 }
@@ -96,7 +105,8 @@ extension DownloadCoordinator {
     /// The single-page viewer supports a direct-delivery request for eligible accounts.
     /// Use the site's rendered image URL so the configured resolution and account limits apply.
     private func resolveMainSiteImage(
-        page: Int, context: PageDownloadContext, source: ResolvedSource
+        page: Int, context: PageDownloadContext, source: ResolvedSource,
+        retryingViewerConnection: Bool
     ) async throws -> ResolvedImageSource? {
         let payload = context.payload
         let viewerURL: URL
@@ -117,9 +127,11 @@ extension DownloadCoordinator {
 
         let directViewerURL = imageViewerURL(viewerURL, skipServerIdentifier: "1")
         var request = GalleryNormalImageRequest(
-            index: page, pageURL: directViewerURL, urlSession: urlSession,
+            index: page, pageURL: directViewerURL,
+            urlSession: retryingViewerConnection ? viewerRetrySession : urlSession,
             allowsCellular: context.options.allowCellular, attempts: 1
         )
+        request.timeoutInterval = retryingViewerConnection ? 30 : 20
         request.reloadsImageLink = true
         let imageURL = try await request.response().imageURL
         guard imageURL.scheme == "https", imageURL.host() != nil else { return nil }
