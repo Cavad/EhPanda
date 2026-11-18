@@ -158,7 +158,7 @@ struct DownloadInspectorPageGroupRow: View {
 
     let status: DownloadPageStatus
     let pages: [DownloadPageInspection]
-    var galleryFailure: DownloadFailure? = nil
+    var galleryFailure: DownloadFailure?
 
     private var countAnimation: Animation? {
         reduceMotion ? nil : .easeInOut(duration: 0.2)

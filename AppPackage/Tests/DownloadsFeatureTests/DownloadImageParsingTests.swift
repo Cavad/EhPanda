@@ -78,10 +78,12 @@ struct DownloadImageParsingTests: DownloadFeatureTestCase {
         defer { operation.cancel() }
 
         try await waitUntil({ started.value.contains(1) })
+        await clock.advance(by: .zero)
         await clock.advance(by: .seconds(19))
         #expect(started.value == [1])
         await clock.advance(by: .seconds(1))
         try await waitUntil({ started.value.contains(2) })
+        await clock.advance(by: .zero)
         #expect(started.value == [1, 2])
 
         first.continuation.finish()

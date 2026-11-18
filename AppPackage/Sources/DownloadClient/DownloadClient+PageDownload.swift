@@ -259,13 +259,11 @@ extension DownloadCoordinator {
         }
     }
 
-    // Take the deadline when scheduling the page. A quick completion cancels its timer; a
-    // cancellation of the gallery cancels both the page transfer and its timer.
-    private static func slowPageTimer(clock: some Clock<Duration>, page: Int) -> Task<PageDownloadEvent, Never> {
-        let deadline = clock.now.advanced(by: .seconds(20))
-        return Task {
+    // A quick completion cancels its timer. Cancelling the gallery cancels each transfer and timer.
+    private static func slowPageTimer(clock: any Clock<Duration>, page: Int) -> Task<PageDownloadEvent, Never> {
+        Task {
             do {
-                try await clock.sleep(until: deadline, tolerance: nil)
+                try await clock.sleep(for: .seconds(20))
                 return .slowPage(page)
             } catch {
                 return .timerCancelled
