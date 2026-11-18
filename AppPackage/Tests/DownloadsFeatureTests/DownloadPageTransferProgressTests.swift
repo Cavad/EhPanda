@@ -243,10 +243,16 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
     func foregroundTransferTimesOutWithoutAContinuedProcessingSession() async throws {
         let gallery = Self.makeGallery(gid: "240065")
         let clock = TestClock()
+        let gate = AsyncStream<Void>.makeStream()
+        defer { gate.continuation.finish() }
         let fixture = try await makeFrozenFixture(
             gallery: gallery,
             client: .noop,
-            pageDownloader: Self.hangingPageDownloader,
+            pageDownloader: .init { _, _, _ in
+                for await _ in gate.stream {}
+                try Task.checkCancellation()
+                throw AppError.unknown
+            },
             clock: clock
         )
         defer { removeTemporaryItem(at: fixture.context.rootURL) }
@@ -256,6 +262,7 @@ struct DownloadPageTransferProgressTests: DownloadFeatureTestCase {
         #expect(!(await manager.testingHasContinuedSession()))
 
         let threshold = DownloadCoordinator.pageTransferAbandonThreshold
+        await clock.advance(by: .zero)
         fixture.advance(by: threshold)
         try await waitUntil {
             guard await manager.testingIsPageTransferring(gid: gallery.gid, pageIndex: 3) else { return true }
