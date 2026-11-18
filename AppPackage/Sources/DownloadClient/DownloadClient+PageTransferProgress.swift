@@ -43,6 +43,7 @@ struct InFlightPageTransfer: Sendable {
     /// time is measured from here, so a transfer that is slow but MOVING is never abandoned however
     /// long it runs. Nil until the first byte, where the attempt's start stands in for it.
     var lastByteDate: Date?
+    var bytesWritten: Int64 = 0
     var isTransferring: Bool
     /// Whether this attempt has already been reported as starved, so the heartbeat's repeated
     /// sweeps report it once rather than every ten seconds.
@@ -87,6 +88,7 @@ extension DownloadCoordinator {
         transfer.startedInBackground = isSceneInBackground
         transfer.firstByteDate = nil
         transfer.lastByteDate = nil
+        transfer.bytesWritten = 0
         transfer.isTransferring = true
         transfer.stallLogged = false
         transfer.isAbandoned = false
@@ -140,12 +142,13 @@ extension DownloadCoordinator {
               transfer.isTransferring, !transfer.isAbandoned,
               attemptID == nil || transfer.attemptID == attemptID
         else { return }
-        if bytesWritten > 0 {
+        if bytesWritten > transfer.bytesWritten {
             // ONE read of the clock stamps both dates, so "when the first byte arrived" and "when
             // the last byte arrived" are the same instant for the first report rather than two
-            // instants a scheduling gap apart. Stamped on the same path that grows the credit
-            // below, so nothing can move the credit without also moving the idle basis.
+            // instants a scheduling gap apart. Duplicate and out-of-order totals do not extend
+            // the deadline while a transfer is stalled.
             let byteDate = now()
+            transfer.bytesWritten = bytesWritten
             transfer.lastByteDate = byteDate
             if transfer.firstByteDate == nil {
                 transfer.firstByteDate = byteDate

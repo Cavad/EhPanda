@@ -2,7 +2,10 @@ import AppModels
 import AppTools
 import Foundation
 import NetworkingFeature
+import OSLogExt
 import ParserFeature
+
+private let logger = Logger(category: .init(describing: DownloadCoordinator.self))
 
 // MARK: - Download Single Page
 extension DownloadCoordinator {
@@ -76,6 +79,15 @@ extension DownloadCoordinator {
                 try Task.checkCancellation()
                 capturedError = error
                 retryingViewerConnection = attemptedImageURL == nil && error == .networkingFailed
+                let stage = attemptedImageURL == nil ? "viewer" : "image"
+                let failureCode = DownloadFailure(error: error).code.rawValue
+                logger.notice(
+                    """
+                    Download page attempt failed, page: \(index, privacy: .public), \
+                    attempt: \(attempt + 1, privacy: .public), stage: \(stage, privacy: .public), \
+                    code: \(failureCode, privacy: .public)
+                    """
+                )
                 if let attemptedImageURL {
                     failedImageURLs.insert(attemptedImageURL)
                 }

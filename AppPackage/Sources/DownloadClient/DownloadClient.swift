@@ -99,6 +99,7 @@ extension DownloadClient {
             urlSession: urlSession,
             viewerRetrySession: viewerRetrySession,
             pageDownloader: pageDownloader,
+            foregroundPageDownloader: .foreground(urlSession: urlSession),
             backgroundTaskStore: backgroundTaskStore,
             backgroundProcessingClient: .live,
             downloadOptionsProvider: {

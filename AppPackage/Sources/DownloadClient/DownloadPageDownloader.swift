@@ -54,12 +54,10 @@ public struct DownloadPageDownloader: Sendable {
         self.download = download
     }
 
-    /// The handler is deliberately ignored: `URLSession.download(for:)` reports no intermediate
-    /// bytes at all, so a foreground transfer credits whole pages only. The live client uses
-    /// `.background`, and the session heartbeat covers this path regardless.
     public static func foreground(urlSession: URLSession) -> Self {
-        .init { request, _, _ in
-            let (fileURL, response) = try await urlSession.download(for: request)
+        .init { request, _, onBytesWritten in
+            let delegate = ForegroundPageDownloadDelegate(onBytesWritten: onBytesWritten)
+            let (fileURL, response) = try await urlSession.download(for: request, delegate: delegate)
             return .init(
                 fileURL: fileURL,
                 response: response,
@@ -92,6 +90,38 @@ public struct DownloadPageDownloader: Sendable {
             )
         }
     }
+}
+
+private final class ForegroundPageDownloadDelegate: NSObject, URLSessionDownloadDelegate {
+    private let onBytesWritten: DownloadPageTransferProgressHandler
+    private let lastForwardDate = Mutex<Date?>(nil)
+
+    init(onBytesWritten: @escaping DownloadPageTransferProgressHandler) {
+        self.onBytesWritten = onBytesWritten
+    }
+
+    func urlSession(
+        _: URLSession,
+        downloadTask _: URLSessionDownloadTask,
+        didWriteData _: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        let shouldForward = lastForwardDate.withLock { lastDate in
+            let now = Date()
+            if let lastDate, now.timeIntervalSince(lastDate) < 0.25 {
+                return false
+            }
+            lastDate = now
+            return true
+        }
+        if shouldForward {
+            onBytesWritten(totalBytesWritten, totalBytesExpectedToWrite)
+        }
+    }
+
+    // `download(for:delegate:)` returns the temporary file to the caller.
+    func urlSession(_: URLSession, downloadTask _: URLSessionDownloadTask, didFinishDownloadingTo _: URL) {}
 }
 
 public enum DownloadBackgroundSessionEvents {
